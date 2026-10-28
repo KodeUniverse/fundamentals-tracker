@@ -237,3 +237,75 @@ def search_chunks(
             },
         )
         return cur.fetchall()
+
+
+def list_prices(
+    cik: int,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Daily bars for one company, newest first."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trade_date,
+                   close::float8     AS close,
+                   adj_close::float8 AS adj_close,
+                   volume
+            FROM prices
+            WHERE cik = %(cik)s
+              AND (%(start_date)s::date IS NULL OR trade_date >= %(start_date)s)
+              AND (%(end_date)s::date IS NULL OR trade_date <= %(end_date)s)
+            ORDER BY trade_date DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+            """,
+            {
+                "cik": cik,
+                "start_date": start_date,
+                "end_date": end_date,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        return cur.fetchall()
+
+
+def latest_price(cik: int) -> dict[str, Any] | None:
+    """Most recent stored bar, or None when the company has no prices yet."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trade_date, close::float8 AS close
+            FROM prices
+            WHERE cik = %s
+            ORDER BY trade_date DESC
+            LIMIT 1
+            """,
+            (cik,),
+        )
+        return cur.fetchone()
+
+
+def share_facts(cik: int, names: Sequence[str]) -> list[dict[str, Any]]:
+    """Instant share-count facts for the given tags, newest period first.
+
+    Several tags are queried because coverage differs: Alphabet has no dei
+    cover-page count (it reports shares per class, which this pipeline drops as
+    dimensioned), so the us-gaap total is the only one available.
+    """
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.name, f.end_date, f.filed_date, f.value::float8 AS value
+            FROM facts f
+            JOIN concepts c ON c.id = f.concept_id
+            WHERE f.cik = %(cik)s
+              AND c.name = ANY(%(names)s)
+              AND f.start_date IS NULL
+            ORDER BY f.end_date DESC, f.filed_date DESC
+            """,
+            {"cik": cik, "names": list(names)},
+        )
+        return cur.fetchall()

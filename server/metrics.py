@@ -24,6 +24,15 @@ OPERATING_INCOME_TAGS = ("OperatingIncomeLoss",)
 NET_INCOME_TAGS = ("NetIncomeLoss", "ProfitLoss")
 EPS_TAGS = ("EarningsPerShareDiluted", "EarningsPerShareBasic")
 
+# Ordered by how current the count is, not by taxonomy. The dei cover-page tag is
+# the freshest but not every issuer reports it, so the us-gaap balance-sheet total
+# is the fallback and the weighted diluted count is the last resort.
+SHARES_TAGS = (
+    "EntityCommonStockSharesOutstanding",
+    "CommonStockSharesOutstanding",
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+)
+
 ALL_TAGS: tuple[str, ...] = (
     REVENUE_TAGS
     + GROSS_PROFIT_TAGS
@@ -60,6 +69,64 @@ def growth(current: float | None, previous: float | None) -> float | None:
     if current is None or not previous:
         return None
     return round((current - previous) / previous, 4)
+
+
+def latest_shares(rows: Sequence[dict[str, Any]]) -> tuple[float, date] | None:
+    """Freshest share count and the date it was reported for.
+
+    The newest period wins; tag order only breaks ties on the same period, so a
+    stale cover-page count never displaces a newer balance-sheet count.
+    """
+    rank = {tag: index for index, tag in enumerate(SHARES_TAGS)}
+    candidates = [row for row in rows if row["name"] in rank]
+    if not candidates:
+        return None
+
+    best = min(
+        candidates,
+        key=lambda row: (
+            -row["end_date"].toordinal(),
+            rank[row["name"]],
+            -row["filed_date"].toordinal(),
+        ),
+    )
+    return best["value"], best["end_date"]
+
+
+def trailing_pe(price: float | None, eps: float | None) -> float | None:
+    """Price divided by the latest annual diluted EPS.
+
+    None when EPS is zero or negative: a negative multiple is not a valuation
+    signal, so the honest answer is that the ratio does not apply.
+    """
+    if price is None or eps is None or eps <= 0:
+        return None
+    return round(price / eps, 2)
+
+
+def trailing_ps(market_cap: float | None, revenue: float | None) -> float | None:
+    if market_cap is None or revenue is None or revenue <= 0:
+        return None
+    return round(market_cap / revenue, 2)
+
+
+def valuation(
+    price: float,
+    shares: float | None,
+    eps: float | None,
+    revenue: float | None,
+) -> dict[str, float | None]:
+    """Market cap and the two trailing multiples from one price and one year.
+
+    P/E needs no share count, so it survives a missing shares tag; only P/S
+    degrades to null in that case.
+    """
+    market_cap = None if shares is None else price * shares
+    return {
+        "market_cap": market_cap,
+        "trailing_pe": trailing_pe(price, eps),
+        "trailing_ps": trailing_ps(market_cap, revenue),
+    }
 
 
 def annual_metrics(rows: Sequence[dict[str, Any]], years: int = 5) -> list[dict[str, Any]]:

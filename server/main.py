@@ -131,6 +131,39 @@ class NarrativeSearchResponse(BaseModel):
     hits: list[NarrativeHit]
 
 
+class PriceBar(BaseModel):
+    trade_date: date
+    close: float
+    adj_close: float | None
+    volume: int | None
+
+
+class PricePage(BaseModel):
+    ticker: str
+    cik: int
+    count: int
+    limit: int
+    offset: int
+    bars: list[PriceBar]
+
+
+class Valuation(BaseModel):
+    ticker: str
+    cik: int
+    price_date: date
+    price: float
+    fiscal_year: int
+    period_end: date
+    eps_diluted: float | None
+    revenue: float | None
+    net_income: float | None
+    shares_outstanding: float | None
+    shares_as_of: date | None
+    market_cap: float | None
+    trailing_pe: float | None
+    trailing_ps: float | None
+
+
 def _entity_or_404(ticker: str) -> dict[str, Any]:
     entity = db.get_entity(ticker.upper())
     if entity is None:
@@ -290,3 +323,79 @@ def narrative_search(
     cik = _entity_or_404(ticker)["cik"] if ticker else None
     hits = db.search_chunks(query=q, cik=cik, section=section, year=year, limit=limit)
     return NarrativeSearchResponse(query=q, count=len(hits), hits=hits)
+
+
+@app.get("/entities/{ticker}/prices", response_model=PricePage, tags=["prices"])
+def prices(
+    ticker: str,
+    start_date: date | None = Query(None, description="Trading date on or after"),
+    end_date: date | None = Query(None, description="Trading date on or before"),
+    limit: int = Query(500, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+) -> PricePage:
+    """Daily bars, newest first.
+
+    `close` is split-adjusted and not dividend-adjusted, which is what a market
+    cap needs. `adj_close` includes dividends and will differ from it.
+    """
+    entity = _entity_or_404(ticker)
+    rows = db.list_prices(
+        cik=entity["cik"],
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+    )
+    return PricePage(
+        ticker=entity["ticker"] or str(entity["cik"]),
+        cik=entity["cik"],
+        count=len(rows),
+        limit=limit,
+        offset=offset,
+        bars=[PriceBar(**row) for row in rows],
+    )
+
+
+@app.get("/entities/{ticker}/valuation", response_model=Valuation, tags=["metrics"])
+def entity_valuation(ticker: str) -> Valuation:
+    """Trailing P/E and P/S joining the latest close with the latest annual year.
+
+    P/E is price divided by reported annual diluted EPS, as the brief describes a
+    trailing multiple. It is not a twelve-month rollup, so `period_end` is
+    returned alongside it: an annual figure can be months old, and the number is
+    only meaningful with its as-of dates. No forward estimates are involved.
+    """
+    entity = _entity_or_404(ticker)
+    price = db.latest_price(entity["cik"])
+    if price is None:
+        raise HTTPException(status_code=404, detail=f"No prices stored for {ticker}")
+
+    annual = metrics.annual_metrics(db.annual_metric_facts(entity["cik"], metrics.ALL_TAGS), years=1)
+    if not annual:
+        raise HTTPException(status_code=404, detail=f"No annual fundamentals stored for {ticker}")
+
+    latest = annual[0]
+    shares = metrics.latest_shares(db.share_facts(entity["cik"], metrics.SHARES_TAGS))
+    values = metrics.valuation(
+        price=price["close"],
+        shares=shares[0] if shares else None,
+        eps=latest["eps_diluted"],
+        revenue=latest["revenue"],
+    )
+
+    return Valuation(
+        ticker=entity["ticker"] or str(entity["cik"]),
+        cik=entity["cik"],
+        price_date=price["trade_date"],
+        price=price["close"],
+        fiscal_year=latest["fiscal_year"],
+        period_end=latest["period_end"],
+        eps_diluted=latest["eps_diluted"],
+        revenue=latest["revenue"],
+        net_income=latest["net_income"],
+        shares_outstanding=shares[0] if shares else None,
+        shares_as_of=shares[1] if shares else None,
+        market_cap=values["market_cap"],
+        trailing_pe=values["trailing_pe"],
+        trailing_ps=values["trailing_ps"],
+    )

@@ -33,12 +33,12 @@ _STUB_CHARS = 2000
 CHUNK_CHARS = 4000
 CHUNK_OVERLAP = 400
 
-# EDGAR's HTML-to-text keeps typographic quotes, and Eaton's MD&A heading uses a
+# EDGAR's HTML-to-text keeps typographic quotes, and ETN's MD&A heading uses a
 # curly apostrophe that a straight-quote pattern would miss.
 _QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
 _SPACE_RUN = re.compile(r"[ \t\u00a0]+")
 _BLANK_RUN = re.compile(r"\n{3,}")
-_MDA_HEADING = re.compile(r"management's discussion and analysis", re.I)
+_MDA_HEADING = re.compile(r"management's discussion and analysis", re.IGNORECASE)
 
 
 class SectionRow(TypedDict):

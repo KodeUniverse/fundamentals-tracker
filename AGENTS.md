@@ -19,6 +19,18 @@ Source of truth for requirements: `Software Engineer FE Case Study NY.txt`.
 Fixed graded universe: NVDA, MSFT, AAPL, GOOGL, ETN — but it must come from
 configuration (`TICKERS`), never hardcoded in code.
 
+## Notes.md
+
+`Notes.md` is the running log for the case study writeup and the follow-up
+interview: the decisions and their reasons, what was cut and why, edge cases
+handled or knowingly skipped, and the numbers worth quoting. It is not code
+documentation.
+
+Update it in the same change whenever a decision settles, a feature is cut, or a
+data quirk turns up. The writeup and interview are graded on exactly that
+reasoning, and it costs nothing to record it while it is fresh. Keep the tone
+plain and honest — known gaps belong in the file, not only the wins.
+
 ## Hard requirements (non-negotiable)
 
 1. Three live sources, all public/free:
@@ -56,12 +68,14 @@ fundamental-data-feed/
   main.py                          env config, cycle loop, per-ticker transaction
   facts.py                         EDGAR XBRL fetch + normalize -> Entity/ConceptRow/FactRow
   narratives.py                    10-K Item 1A + Item 7 fetch, cleanup, chunking
+  prices.py                        Yahoo Finance bars -> PriceRow
   db.py                            psycopg3 persistence (upsert + bulk insert)
-  tests/                           unittest suite for chunking
+  tests/                           unittest suite for chunking and price conversion
 server/main.py                     FastAPI routes and response models
 server/db.py                       connection pool and all SQL
 server/metrics.py                  derived metric math, pure functions
 server/tests/                      unittest suite for the metric math
+Notes.md                           decisions, cuts, edge cases for writeup + interview
 ```
 
 Module boundary rule: `facts.py` and `narratives.py` never import `db`, `db.py`
@@ -80,6 +94,8 @@ Read-only JSON; interactive docs at `/docs`.
 | `GET /entities/{ticker}/facts` | raw facts; filters `concept`, `taxonomy`, `form_type`, `start_date`, `end_date`, `limit`, `offset` |
 | `GET /entities/{ticker}/facts/{concept}` | time series for one tag; `taxonomy` defaults to `us-gaap` |
 | `GET /entities/{ticker}/metrics` | annual reported and derived metrics; `years` defaults to 5 |
+| `GET /entities/{ticker}/prices` | daily bars, newest first; filters `start_date`, `end_date`, `limit`, `offset` |
+| `GET /entities/{ticker}/valuation` | trailing P/E and P/S, with the price date and annual period returned |
 | `GET /entities/{ticker}/filings` | stored narrative sections with chunk counts, newest first |
 | `GET /entities/{ticker}/filings/{section}` | one whole section (`risk_factors` or `mda`); `year` defaults to the latest filing |
 | `GET /narrative/search` | ranked full-text search over chunks; `q`, optional `ticker`, `section`, `year`, `limit` |
@@ -99,6 +115,8 @@ embeddings. `q` accepts plain words, `"quoted phrases"`, and `OR`.
 - `facts(cik, concept_id, unit, value NUMERIC, start_date, end_date, form_type,
   filed_date, accession, filing_fy, filing_fp, frame)` with natural key
   `UNIQUE NULLS NOT DISTINCT (cik, concept_id, unit, start_date, end_date, accession)`.
+- `prices(cik, trade_date, close NUMERIC, adj_close NUMERIC, volume, fetched_at)`
+  with `UNIQUE (cik, trade_date)`. Ten years of daily bars per company.
 - `filing_sections(id, cik, accession, form_type, filed_date, period_end, section,
   content, char_count)` — UNIQUE (cik, accession, section); `section` is
   `risk_factors` (Item 1A) or `mda` (Item 7). The whole section is stored, not
@@ -120,6 +138,17 @@ Semantics that matter:
   endpoint is configured, and never make ingestion depend on one.
 - Vector dimension is fixed at 1536 in the column type; changing embedding
   models means an `ALTER TABLE` plus a re-embed.
+- `prices` rows are rewritten every cycle, unlike facts. Yahoo back-adjusts its
+  whole history when a split happens, so the stored window is only internally
+  consistent if it is refreshed at the current scale. `close` is split-adjusted
+  and not dividend-adjusted; `adj_close` includes dividends.
+- Share counts need a tag fallback: Alphabet reports shares per class with a
+  dimension, which `get_all_facts()` drops, so `dei:EntityCommonStockShares-
+  Outstanding` is absent for GOOGL and `us-gaap:CommonStockSharesOutstanding` is
+  the only source. P/E needs no shares; only P/S degrades to null without them.
+- `/valuation` uses the latest ANNUAL EPS, not a trailing-twelve-month rollup, and
+  returns `period_end` so the staleness is visible. A negative EPS returns a null
+  P/E rather than a negative multiple.
 
 ## Conventions (already decided — don't relitigate)
 
@@ -256,22 +285,33 @@ source, table, endpoint, or env var, a decision that is now settled, or work tha
 was dropped. Bump the date. If another section of this file stops matching the
 code, fix the file instead of working around it.
 
+Staleness check before finishing — if a line matches but the feature exists, these
+files are stale:
+
+```bash
+grep -in "not built\|not started\|no snapshot\|no prices" Notes.md AGENTS.md
+```
+
 Done:
 - XBRL ingestion, live, for all five tickers: 125,545 facts, 1,350 concepts.
 - Idempotent re-ingestion, restatement preservation, graceful SIGTERM.
 - Containerized feed running as a long-lived poller.
 - 10-K narrative ingest: Item 1A and Item 7 for the latest two filings per
   company, 20 sections and 361 chunks, stored whole plus chunked for retrieval.
+- Market data: ten years of daily bars per company from Yahoo Finance, 12,560
+  rows, refetched and rescaled each cycle.
+- Trailing valuation: P/E on latest annual diluted EPS and P/S on market cap
+  over annual revenue, with price date and period end returned.
 - Postgres full-text retrieval over chunks works with no LLM credentials.
 - Read API on port 8000: entities, concept catalog, filtered raw facts,
-  per-concept time series, annual metrics with margins and YoY growth, narrative
-  sections, ranked narrative search.
-- 12 unittest tests covering the metric math (`server/tests`) and 5 covering
-  chunking (`fundamental-data-feed/tests`).
+  per-concept time series, annual metrics with margins and YoY growth, prices,
+  valuation, narrative sections, ranked narrative search.
+- 22 unittest tests covering metric and valuation math (`server/tests`) and 8
+  covering chunking and price conversion (`fundamental-data-feed/tests`).
 
 Not started: embedding pass (`filing_chunks.embedding` is NULL everywhere),
-year-over-year risk factor diffing, prices/yfinance, cross-source valuation
-multiple, snapshot read/write, LLM routing layer, README, design writeup.
+year-over-year risk factor diffing, snapshot read/write, LLM routing layer,
+README, design writeup.
 
 ## Gotchas
 
@@ -324,6 +364,8 @@ design, AI integration, product judgment, scope, and communication. So:
    trivial getters.
 7. `AGENTS.md` is updated: status block, env var table, data model, and gotchas
    all still match what the code does.
+8. `Notes.md` is updated when the change settles a decision, takes a cut, or
+   surfaces an edge case — with the reason, not just the outcome.
 
 ## Acceptance test
 

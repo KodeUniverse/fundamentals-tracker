@@ -23,9 +23,18 @@ import threading
 
 import edgar
 
-from db import connect, insert_facts, replace_chunks, upsert_concepts, upsert_entity, upsert_sections
+from db import (
+    connect,
+    insert_facts,
+    replace_chunks,
+    upsert_concepts,
+    upsert_entity,
+    upsert_prices,
+    upsert_sections,
+)
 from facts import build_entity, collect_concepts, fact_rows, get_all_facts
 from narratives import chunk_rows, collect_sections
+from prices import collect_prices
 
 log = logging.getLogger("feed")
 
@@ -43,6 +52,12 @@ def ingest_ticker(conn, ticker: str) -> None:
         log.exception("%s: narrative extraction failed, ingesting facts only", ticker)
         sections = []
 
+    try:
+        prices = collect_prices(entity.cik, ticker)
+    except Exception:  # Yahoo is an unofficial scraper; keep the stored window
+        log.exception("%s: price fetch failed, keeping stored prices", ticker)
+        prices = []
+
     with conn.transaction():
         upsert_entity(conn, entity.cik, entity.entity_name, entity.ticker)
         concept_ids = upsert_concepts(conn, concepts)
@@ -55,6 +70,8 @@ def ingest_ticker(conn, ticker: str) -> None:
             section_id = section_ids[(section["accession"], section["section"])]
             chunk_total += replace_chunks(conn, section_id, chunk_rows(section_id, section["content"]))
 
+        price_total = upsert_prices(conn, prices)
+
     log.info(
         "%s (CIK %s, %s): %d facts, %d concepts, %d new rows (%d already stored)",
         ticker,
@@ -66,10 +83,11 @@ def ingest_ticker(conn, ticker: str) -> None:
         len(rows) - inserted,
     )
     log.info(
-        "%s: %d filing sections, %d chunks",
+        "%s: %d filing sections, %d chunks, %d price bars",
         ticker,
         len(sections),
         chunk_total,
+        price_total,
     )
 
 

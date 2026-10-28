@@ -51,6 +51,67 @@ class RatioTest(unittest.TestCase):
         self.assertIsNone(metrics.growth(110.0, 0))
 
 
+def share(name: str, end: str, filed: str, value: float) -> dict:
+    return {
+        "name": name,
+        "end_date": date.fromisoformat(end),
+        "filed_date": date.fromisoformat(filed),
+        "value": value,
+    }
+
+
+class LatestSharesTest(unittest.TestCase):
+    def test_prefers_the_most_recent_period(self):
+        rows = [
+            share("CommonStockSharesOutstanding", "2025-12-31", "2026-02-01", 100.0),
+            share("CommonStockSharesOutstanding", "2026-06-30", "2026-08-01", 110.0),
+        ]
+        self.assertEqual(metrics.latest_shares(rows), (110.0, date(2026, 6, 30)))
+
+    def test_cover_page_tag_wins_a_tie_on_period(self):
+        rows = [
+            share("CommonStockSharesOutstanding", "2026-06-30", "2026-08-01", 111.0),
+            share("EntityCommonStockSharesOutstanding", "2026-06-30", "2026-08-01", 110.0),
+        ]
+        self.assertEqual(metrics.latest_shares(rows)[0], 110.0)
+
+    def test_returns_none_when_no_share_tag_is_present(self):
+        self.assertIsNone(metrics.latest_shares([]))
+        self.assertIsNone(metrics.latest_shares([share("Assets", "2026-06-30", "2026-08-01", 1.0)]))
+
+
+class ValuationTest(unittest.TestCase):
+    def test_pe_is_price_over_annual_eps(self):
+        self.assertEqual(metrics.trailing_pe(300.0, 10.0), 30.0)
+
+    def test_pe_is_none_for_zero_or_negative_eps(self):
+        self.assertIsNone(metrics.trailing_pe(300.0, 0))
+        self.assertIsNone(metrics.trailing_pe(300.0, -2.5))
+
+    def test_pe_is_none_without_a_price_or_eps(self):
+        self.assertIsNone(metrics.trailing_pe(None, 10.0))
+        self.assertIsNone(metrics.trailing_pe(300.0, None))
+
+    def test_ps_is_market_cap_over_revenue(self):
+        self.assertEqual(metrics.trailing_ps(1000.0, 250.0), 4.0)
+
+    def test_ps_is_none_without_shares_or_revenue(self):
+        self.assertIsNone(metrics.trailing_ps(None, 250.0))
+        self.assertIsNone(metrics.trailing_ps(1000.0, 0))
+
+    def test_market_cap_is_price_times_shares(self):
+        values = metrics.valuation(price=100.0, shares=2.0e9, eps=5.0, revenue=8.0e10)
+        self.assertEqual(values["market_cap"], 2.0e11)
+        self.assertEqual(values["trailing_pe"], 20.0)
+        self.assertEqual(values["trailing_ps"], 2.5)
+
+    def test_missing_shares_only_breaks_the_sales_multiple(self):
+        values = metrics.valuation(price=100.0, shares=None, eps=5.0, revenue=200.0)
+        self.assertIsNone(values["market_cap"])
+        self.assertIsNone(values["trailing_ps"])
+        self.assertEqual(values["trailing_pe"], 20.0)
+
+
 class AnnualMetricsTest(unittest.TestCase):
     def test_gross_profit_falls_back_to_revenue_minus_cost(self):
         rows = [

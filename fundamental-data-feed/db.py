@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 
 from facts import ConceptRow, FactRow
 from narratives import ChunkRow, SectionRow
+from prices import PriceRow
 
 _INSERT_FACTS_SQL = """
 INSERT INTO facts (
@@ -57,6 +58,16 @@ ON CONFLICT ON CONSTRAINT filing_chunks_section_index_key DO UPDATE SET
         WHEN filing_chunks.content = EXCLUDED.content THEN filing_chunks.embedding
         ELSE NULL
     END
+"""
+
+_UPSERT_PRICE_SQL = """
+INSERT INTO prices (cik, trade_date, close, adj_close, volume)
+VALUES (%(cik)s, %(trade_date)s, %(close)s, %(adj_close)s, %(volume)s)
+ON CONFLICT ON CONSTRAINT prices_natural_key DO UPDATE SET
+    close = EXCLUDED.close,
+    adj_close = EXCLUDED.adj_close,
+    volume = EXCLUDED.volume,
+    fetched_at = now()
 """
 
 
@@ -145,3 +156,16 @@ def replace_chunks(conn: Connection, section_id: int, rows: Sequence[ChunkRow]) 
             (section_id, len(rows)),
         )
     return len(rows)
+
+
+def upsert_prices(conn: Connection, rows: Sequence[PriceRow]) -> int:
+    """Insert or refresh price bars, returning how many were written.
+
+    Updates rather than skips on conflict: the source rescales history when a
+    split happens, so a stored bar is not immutable the way a fact is.
+    """
+    if not rows:
+        return 0
+    with conn.cursor() as cur:
+        cur.executemany(_UPSERT_PRICE_SQL, rows)
+        return cur.rowcount

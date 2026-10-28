@@ -67,6 +67,27 @@ CREATE INDEX IF NOT EXISTS facts_concept_end_idx ON facts (concept_id, end_date)
 -- Everything reported for one company at one period.
 CREATE INDEX IF NOT EXISTS facts_cik_end_idx ON facts (cik, end_date);
 
+-- Daily market data. Unlike facts, these rows are rewritten every cycle: Yahoo
+-- back-adjusts its whole history for splits, so the stored window is only
+-- consistent if it is refreshed at the current scale.
+CREATE TABLE IF NOT EXISTS prices (
+    id         BIGSERIAL PRIMARY KEY,
+    cik        BIGINT NOT NULL REFERENCES entities (cik) ON DELETE CASCADE,
+    trade_date DATE NOT NULL,
+    close      NUMERIC NOT NULL,
+    adj_close  NUMERIC,
+    volume     BIGINT,
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT prices_natural_key UNIQUE (cik, trade_date)
+);
+
+COMMENT ON TABLE prices IS 'Daily Yahoo Finance bars, one row per company per trading day.';
+COMMENT ON COLUMN prices.close IS 'Split-adjusted close, not dividend-adjusted. Use this for market cap.';
+COMMENT ON COLUMN prices.adj_close IS 'Split and dividend adjusted; differs from close by accumulated dividends.';
+COMMENT ON COLUMN prices.fetched_at IS 'Refreshed each cycle because the source rescales history after a split.';
+
+CREATE INDEX IF NOT EXISTS prices_cik_date_idx ON prices (cik, trade_date DESC);
+
 -- 10-K narrative. One row per section per filing, so the latest annual report
 -- and the prior one sit side by side; that comparison ("what new risk factors
 -- did they add") needs contiguous text, which is why the whole section is kept
