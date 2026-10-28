@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS concepts (
     description TEXT,
     CONSTRAINT concepts_taxonomy_name_key UNIQUE (taxonomy, name)
 );
-
-COMMENT ON TABLE concepts IS 'XBRL tags seen in companyfacts: us-gaap, dei, srt, ecd, ffd, invest, ifrs-full.';
+COMMENT ON TABLE concepts IS 'Stores the XBRL metrics and related metadata.';
+COMMENT ON TABLE concepts.taxonomies IS 'XBRL taxonomies: us-gaap, dei, srt, ecd, ffd, invest, ifrs-full.';
 COMMENT ON COLUMN concepts.name IS 'Local tag name without namespace prefix, e.g. RevenueFromContractWithCustomerExcludingAssessedTax.';
 
 CREATE TABLE IF NOT EXISTS facts (

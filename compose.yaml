@@ -1,9 +1,16 @@
 name: fundamentals-tracker
 
+networks:
+  app-net:
+    driver: bridge
+
 services:
   db:
     image: postgres:17-alpine
+    container_name: fundamentals-tracker-db
     restart: unless-stopped
+    networks:
+      - app-net
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-tracker}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tracker}
@@ -13,12 +20,79 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Runs once, only when the data volume is empty.
-      - ./src/database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tracker} -d ${POSTGRES_DB:-tracker}"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
+
+  fundamental-data-feed:
+    build:
+      context: ./fundamental-data-feed
+      dockerfile: Dockerfile
+    container_name: fundamentals-tracker-feed
+    networks:
+      - app-net
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Database connection (constructed from POSTGRES_* with sensible defaults)
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-tracker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tracker}
+      POSTGRES_DB: ${POSTGRES_DB:-tracker}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tracker}:${POSTGRES_PASSWORD:-tracker}@db:5432/${POSTGRES_DB:-tracker}
+      # EDGAR identity (required by SEC)
+      EDGAR_IDENTITY: ${EDGAR_IDENTITY:-fundamentals-tracker case study (kodeuniverse@proton.me)}
+      # Ingestion behavior
+      TICKERS: ${TICKERS:-NVDA,MSFT,AAPL,GOOGL,ETN}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-3600}
+      # Allow loading from local snapshot when live network is unavailable
+      SNAPSHOT_DIR: /app/snapshots
+      USE_SNAPSHOT_IF_NO_NETWORK: ${USE_SNAPSHOT_IF_NO_NETWORK:-true}
+    volumes:
+      # Mount seed files for offline review
+      - ./GOOGL_facts.json:/app/snapshots/GOOGL_facts.json:ro
+      - ./database:/app/database:ro
+    restart: on-failure
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: fundamentals-tracker-server
+    restart: unless-stopped
+    networks:
+      - app-net
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-tracker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tracker}
+      POSTGRES_DB: ${POSTGRES_DB:-tracker}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-tracker}:${POSTGRES_PASSWORD:-tracker}@db:5432/${POSTGRES_DB:-tracker}
+      # API configuration
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      # LLM configuration
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./database:/app/database:ro
 
 volumes:
   pgdata:
