@@ -3,10 +3,14 @@
 -- Layered deliberately:
 --   entities / concepts  dimensional reference data
 --   facts                the raw XBRL layer, one row per fact per filing
+--   filing_sections      10-K narrative, one row per filing and section
+--   filing_chunks        retrieval windows over filing_sections
 --
 -- Metric resolution (revenue -> gross margin -> YoY growth) happens above this
 -- layer, in SQL or Python, so the stored data stays a faithful mirror of what
 -- SEC EDGAR reported. Nothing here aggregates or picks a "preferred" value.
+
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS entities (
     cik         BIGINT PRIMARY KEY,
@@ -27,7 +31,7 @@ CREATE TABLE IF NOT EXISTS concepts (
     CONSTRAINT concepts_taxonomy_name_key UNIQUE (taxonomy, name)
 );
 COMMENT ON TABLE concepts IS 'Stores the XBRL metrics and related metadata.';
-COMMENT ON TABLE concepts.taxonomies IS 'XBRL taxonomies: us-gaap, dei, srt, ecd, ffd, invest, ifrs-full.';
+COMMENT ON COLUMN concepts.taxonomy IS 'XBRL taxonomy: us-gaap, dei, srt, ecd, ffd, invest, ifrs-full.';
 COMMENT ON COLUMN concepts.name IS 'Local tag name without namespace prefix, e.g. RevenueFromContractWithCustomerExcludingAssessedTax.';
 
 CREATE TABLE IF NOT EXISTS facts (
@@ -62,3 +66,49 @@ CREATE INDEX IF NOT EXISTS facts_cik_concept_end_idx ON facts (cik, concept_id, 
 CREATE INDEX IF NOT EXISTS facts_concept_end_idx ON facts (concept_id, end_date);
 -- Everything reported for one company at one period.
 CREATE INDEX IF NOT EXISTS facts_cik_end_idx ON facts (cik, end_date);
+
+-- 10-K narrative. One row per section per filing, so the latest annual report
+-- and the prior one sit side by side; that comparison ("what new risk factors
+-- did they add") needs contiguous text, which is why the whole section is kept
+-- rather than only its chunks.
+CREATE TABLE IF NOT EXISTS filing_sections (
+    id         BIGSERIAL PRIMARY KEY,
+    cik        BIGINT NOT NULL REFERENCES entities (cik) ON DELETE CASCADE,
+    accession  TEXT NOT NULL,
+    form_type  TEXT NOT NULL,
+    filed_date DATE NOT NULL,
+    period_end DATE NOT NULL,
+    section    TEXT NOT NULL CHECK (section IN ('risk_factors', 'mda')),
+    content    TEXT NOT NULL,
+    char_count INTEGER NOT NULL,
+    CONSTRAINT filing_sections_natural_key UNIQUE (cik, accession, section)
+);
+
+COMMENT ON TABLE filing_sections IS 'Item 1A and Item 7 text from 10-K filings, one row per filing and section.';
+COMMENT ON COLUMN filing_sections.period_end IS 'Fiscal period the filing covers; the key for year-over-year comparison.';
+COMMENT ON COLUMN filing_sections.content IS 'Section text with the item heading included and whitespace collapsed.';
+
+CREATE INDEX IF NOT EXISTS filing_sections_lookup_idx
+    ON filing_sections (cik, section, period_end DESC);
+
+-- Retrieval windows. Chunked so a question can be answered from a few
+-- paragraphs instead of a 20k-token section, and so each unit can carry its own
+-- vector. `embedding` stays NULL until an embedding pass fills it.
+CREATE TABLE IF NOT EXISTS filing_chunks (
+    id          BIGSERIAL PRIMARY KEY,
+    section_id  BIGINT NOT NULL REFERENCES filing_sections (id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    content     TEXT NOT NULL,
+    token_count INTEGER,
+    embedding   vector(1536),
+    search      tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+    CONSTRAINT filing_chunks_section_index_key UNIQUE (section_id, chunk_index)
+);
+
+COMMENT ON TABLE filing_chunks IS 'Overlapping windows over filing_sections, for full-text and vector retrieval.';
+COMMENT ON COLUMN filing_chunks.token_count IS 'Approximate: characters divided by 4.';
+COMMENT ON COLUMN filing_chunks.embedding IS 'NULL until embedded; retrieval falls back to full-text search.';
+
+CREATE INDEX IF NOT EXISTS filing_chunks_search_idx ON filing_chunks USING gin (search);
+CREATE INDEX IF NOT EXISTS filing_chunks_embedding_idx
+    ON filing_chunks USING hnsw (embedding vector_cosine_ops);

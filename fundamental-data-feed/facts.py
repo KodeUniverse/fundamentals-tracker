@@ -1,11 +1,10 @@
 """Fetch EDGAR company facts and normalize them to DB rows.
 
-Plain functions over a `Company` instance rather than a class or a module-level
-cache: the caller constructs one `Company` per ticker per cycle, so the lifecycle
-is explicit and the mapping is easy to test. edgartools already caches the
-expensive part (the parsed facts payload) internally.
+The caller constructs one `Company` per ticker per cycle. 
+edgartools already caches the expensive part (the parsed facts payload) 
+internally.
 
-The output shapes mirror `database/init.sql`.
+The output shapes mirror database schema.
 """
 
 from __future__ import annotations

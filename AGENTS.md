@@ -44,9 +44,9 @@ configuration (`TICKERS`), never hardcoded in code.
 
 | Service | Container | Notes |
 | --- | --- | --- |
-| `db` | `fundamentals-tracker-db` | postgres:17-alpine, port 5432, volume `pgdata`, healthcheck |
+| `db` | `fundamentals-tracker-db` | pgvector/pgvector:pg17 (Debian, extension preinstalled), port 5432, volume `pgdata`, healthcheck |
 | `fundamental-data-feed` | `fundamentals-tracker-feed` | Long-running ingest loop, polls `POLL_INTERVAL_SECONDS` |
-| `server` | `fundamentals-tracker-server` | FastAPI, port 8000 (currently a stub) |
+| `server` | `fundamentals-tracker-server` | FastAPI on port 8000, read-only JSON over Postgres |
 
 Shared `app-net` bridge network. Compose project name: `fundamentals-tracker`.
 
@@ -54,13 +54,41 @@ Shared `app-net` bridge network. Compose project name: `fundamentals-tracker`.
 database/init.sql                  schema, applied only on an EMPTY pgdata volume
 fundamental-data-feed/
   main.py                          env config, cycle loop, per-ticker transaction
-  facts.py                         EDGAR fetch + normalize -> Entity/ConceptRow/FactRow
+  facts.py                         EDGAR XBRL fetch + normalize -> Entity/ConceptRow/FactRow
+  narratives.py                    10-K Item 1A + Item 7 fetch, cleanup, chunking
   db.py                            psycopg3 persistence (upsert + bulk insert)
-server/main.py                     FastAPI app
+  tests/                           unittest suite for chunking
+server/main.py                     FastAPI routes and response models
+server/db.py                       connection pool and all SQL
+server/metrics.py                  derived metric math, pure functions
+server/tests/                      unittest suite for the metric math
 ```
 
-Module boundary rule: `facts.py` never imports `db`, `db.py` never imports `edgar`,
-and no SQL ever lives in `main.py` or in the server's request handlers.
+Module boundary rule: `facts.py` and `narratives.py` never import `db`, `db.py`
+never imports `edgar`, and no SQL ever lives in `main.py` or in the server's
+request handlers.
+
+## API
+
+Read-only JSON; interactive docs at `/docs`.
+
+| Route | Returns |
+| --- | --- |
+| `GET /entities` | tracked companies with fact counts |
+| `GET /entities/{ticker}` | one company |
+| `GET /entities/{ticker}/concepts` | concept catalog with coverage dates |
+| `GET /entities/{ticker}/facts` | raw facts; filters `concept`, `taxonomy`, `form_type`, `start_date`, `end_date`, `limit`, `offset` |
+| `GET /entities/{ticker}/facts/{concept}` | time series for one tag; `taxonomy` defaults to `us-gaap` |
+| `GET /entities/{ticker}/metrics` | annual reported and derived metrics; `years` defaults to 5 |
+| `GET /entities/{ticker}/filings` | stored narrative sections with chunk counts, newest first |
+| `GET /entities/{ticker}/filings/{section}` | one whole section (`risk_factors` or `mda`); `year` defaults to the latest filing |
+| `GET /narrative/search` | ranked full-text search over chunks; `q`, optional `ticker`, `section`, `year`, `limit` |
+
+Money is in USD as reported, margins and growth are fractions (0.469 = 46.9%),
+and a tag the company never reported comes back null rather than estimated.
+
+Narrative search uses Postgres full-text, so it needs no LLM credentials and no
+embeddings. `q` accepts plain words, `"quoted phrases"`, and `OR`.
 
 ## Data model (database/init.sql)
 
@@ -71,6 +99,14 @@ and no SQL ever lives in `main.py` or in the server's request handlers.
 - `facts(cik, concept_id, unit, value NUMERIC, start_date, end_date, form_type,
   filed_date, accession, filing_fy, filing_fp, frame)` with natural key
   `UNIQUE NULLS NOT DISTINCT (cik, concept_id, unit, start_date, end_date, accession)`.
+- `filing_sections(id, cik, accession, form_type, filed_date, period_end, section,
+  content, char_count)` — UNIQUE (cik, accession, section); `section` is
+  `risk_factors` (Item 1A) or `mda` (Item 7). The whole section is stored, not
+  only its chunks, because year-over-year comparison needs contiguous text.
+- `filing_chunks(id, section_id, chunk_index, content, token_count, embedding
+  vector(1536), search)` — UNIQUE (section_id, chunk_index). Overlapping ~4000
+  character windows; `search` is a generated `tsvector`, `embedding` is NULL
+  until an embedding pass fills it.
 
 Semantics that matter:
 
@@ -79,6 +115,11 @@ Semantics that matter:
   fact reported in the FY2025 10-K carries `filing_fy = 2025`.
 - Restatements are preserved as separate rows by `accession`. Do not collapse them.
 - `NULLS NOT DISTINCT` is load-bearing for the natural key. Do not remove it.
+- `filing_chunks.embedding` is deliberately nullable: full-text retrieval must
+  work with no LLM credentials at all. Only fill vectors when an embedding
+  endpoint is configured, and never make ingestion depend on one.
+- Vector dimension is fixed at 1536 in the column type; changing embedding
+  models means an `ALTER TABLE` plus a re-embed.
 
 ## Conventions (already decided — don't relitigate)
 
@@ -180,6 +221,12 @@ docker exec fundamentals-tracker-db psql -U tracker -d tracker -c "
 
 # local run (deps live in fundamental-data-feed/.venv)
 fundamental-data-feed/.venv/bin/python fundamental-data-feed/main.py
+
+# metric math tests (stdlib unittest, no database needed)
+cd server && python3 -m unittest discover -v
+
+# chunking tests (needs the feed venv, which has edgartools)
+cd fundamental-data-feed && .venv/bin/python -m unittest discover -v
 ```
 
 `RUN_ONCE=1` exits after one cycle — use it for tests, snapshot builds, and CI.
@@ -189,7 +236,7 @@ fundamental-data-feed/.venv/bin/python fundamental-data-feed/main.py
 | Var | Purpose |
 | --- | --- |
 | `POSTGRES_USER` / `_PASSWORD` / `_DB` / `_PORT` | database |
-| `DATABASE_URL` | feed uses plain `postgresql://` (psycopg); server uses `postgresql+psycopg://` (SQLAlchemy) |
+| `DATABASE_URL` | libpq URL used by both services, e.g. `postgresql://user:pass@db:5432/tracker` |
 | `EDGAR_IDENTITY` | "Name email@example.com" — SEC returns 403 without it |
 | `TICKERS` | comma-separated universe |
 | `POLL_INTERVAL_SECONDS` | feed cycle interval (default 3600) |
@@ -213,10 +260,18 @@ Done:
 - XBRL ingestion, live, for all five tickers: 125,545 facts, 1,350 concepts.
 - Idempotent re-ingestion, restatement preservation, graceful SIGTERM.
 - Containerized feed running as a long-lived poller.
+- 10-K narrative ingest: Item 1A and Item 7 for the latest two filings per
+  company, 20 sections and 361 chunks, stored whole plus chunked for retrieval.
+- Postgres full-text retrieval over chunks works with no LLM credentials.
+- Read API on port 8000: entities, concept catalog, filtered raw facts,
+  per-concept time series, annual metrics with margins and YoY growth, narrative
+  sections, ranked narrative search.
+- 12 unittest tests covering the metric math (`server/tests`) and 5 covering
+  chunking (`fundamental-data-feed/tests`).
 
-Not started: 10-K narrative ingest, prices/yfinance, snapshot read/write, FastAPI
-endpoints, derived + cross-source metrics, LLM routing layer, tests, README,
-design writeup.
+Not started: embedding pass (`filing_chunks.embedding` is NULL everywhere),
+year-over-year risk factor diffing, prices/yfinance, cross-source valuation
+multiple, snapshot read/write, LLM routing layer, README, design writeup.
 
 ## Gotchas
 
@@ -232,6 +287,23 @@ design writeup.
   deps are in `fundamental-data-feed/.venv`.
 - `upsert_concepts` reads the whole `concepts` table deliberately — it is small
   shared reference data, and it avoids tracking newly-created ids.
+- Gross profit is not tagged by every issuer. GOOGL and ETN have no `GrossProfit`,
+  so `metrics.py` derives it as revenue minus `CostOfRevenue`. ETN stopped tagging
+  `OperatingIncomeLoss` after 2019, so its operating margin is null for recent
+  years. That is the data, not a bug — do not fill the gaps with estimates.
+- Eaton's Item 7 is a 252-character cross-reference, not the MD&A. The real text
+  sits later in the document under an unnumbered heading, and that heading uses a
+  typographic apostrophe, so a straight-quote pattern misses it. `narratives.py`
+  normalizes quotes and takes the last heading hit when the parsed section looks
+  like a stub. edgartools logs the same truncation warning, so the fallback is
+  not fighting the parser blindly.
+- `filing_sections.content` is whitespace-collapsed on purpose. EDGAR's
+  HTML-to-text pads table cells with runs of spaces, which would otherwise
+  dominate chunk boundaries and the `tsvector`.
+- The pgvector image runs `init.sql` with `ON_ERROR_STOP=1`, so any failing
+  statement aborts the whole schema. That is how the pre-existing
+  `COMMENT ON TABLE concepts.taxonomies` (a table that never existed) got
+  exposed; it is now a column comment.
 - Each `docker compose build` of the feed leaves a ~2.5 GB dangling image, and the
   root filesystem here is only 125 GB. If builds fail with "No space left on
   device", run `docker image prune -f` (dangling only) before touching anything else.

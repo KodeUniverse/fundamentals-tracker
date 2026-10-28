@@ -23,8 +23,9 @@ import threading
 
 import edgar
 
-from db import connect, insert_facts, upsert_concepts, upsert_entity
+from db import connect, insert_facts, replace_chunks, upsert_concepts, upsert_entity, upsert_sections
 from facts import build_entity, collect_concepts, fact_rows, get_all_facts
+from narratives import chunk_rows, collect_sections
 
 log = logging.getLogger("feed")
 
@@ -36,11 +37,23 @@ def ingest_ticker(conn, ticker: str) -> None:
     facts = get_all_facts(company)
     concepts = collect_concepts(facts)
 
+    try:
+        sections = collect_sections(company)
+    except Exception:  # narrative parsing is the fragile part; facts still land
+        log.exception("%s: narrative extraction failed, ingesting facts only", ticker)
+        sections = []
+
     with conn.transaction():
         upsert_entity(conn, entity.cik, entity.entity_name, entity.ticker)
         concept_ids = upsert_concepts(conn, concepts)
         rows = fact_rows(facts, entity.cik, concept_ids)
         inserted = insert_facts(conn, rows)
+
+        section_ids = upsert_sections(conn, sections)
+        chunk_total = 0
+        for section in sections:
+            section_id = section_ids[(section["accession"], section["section"])]
+            chunk_total += replace_chunks(conn, section_id, chunk_rows(section_id, section["content"]))
 
     log.info(
         "%s (CIK %s, %s): %d facts, %d concepts, %d new rows (%d already stored)",
@@ -51,6 +64,12 @@ def ingest_ticker(conn, ticker: str) -> None:
         len(concepts),
         inserted,
         len(rows) - inserted,
+    )
+    log.info(
+        "%s: %d filing sections, %d chunks",
+        ticker,
+        len(sections),
+        chunk_total,
     )
 
 
