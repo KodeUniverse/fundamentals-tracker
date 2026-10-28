@@ -7,7 +7,7 @@ entity/concepts/facts land atomically.
 from __future__ import annotations
 
 import os
-from typing import Sequence
+from collections.abc import Sequence
 
 import psycopg
 from psycopg import Connection
@@ -55,8 +55,8 @@ def upsert_entity(conn: Connection, cik: int, entity_name: str, ticker: str | No
         )
 
 
-def upsert_concepts(conn: Connection, concepts: Sequence[ConceptRow]) -> dict[tuple[str, str], int]:
-    """Insert any new concepts, then return the (taxonomy, name) -> id map.
+def upsert_concepts(conn: Connection, concepts: Sequence[ConceptRow]) -> dict[str, int]:
+    """Insert any new concepts, then return the `taxonomy:name` -> id map.
 
     Concepts are small, globally shared reference data, so the whole table is
     read back rather than tracking which ids were just created.
@@ -71,7 +71,7 @@ def upsert_concepts(conn: Connection, concepts: Sequence[ConceptRow]) -> dict[tu
             concepts,
         )
         cur.execute("SELECT id, taxonomy, name FROM concepts")
-        return {(row["taxonomy"], row["name"]): row["id"] for row in cur.fetchall()}
+        return {f"{row['taxonomy']}:{row['name']}": row["id"] for row in cur.fetchall()}
 
 
 def insert_facts(conn: Connection, rows: Sequence[FactRow]) -> int:

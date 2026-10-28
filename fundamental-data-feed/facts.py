@@ -10,10 +10,12 @@ The output shapes mirror `database/init.sql`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
-from typing import Iterator, NamedTuple, Sequence, TypedDict
+from typing import NamedTuple, TypedDict
 
 import edgar
+from edgar.entity.models import FinancialFact
 
 
 class Entity(NamedTuple):
@@ -46,7 +48,7 @@ def build_entity(company: edgar.Company, ticker: str) -> Entity:
     return Entity(cik=int(company.cik), entity_name=company.name, ticker=ticker)
 
 
-def get_all_facts(company: edgar.Company) -> list:
+def get_all_facts(company: edgar.Company) -> list[FinancialFact]:
     """Every reported fact for the company, across all filings and periods.
 
     Raw facts, not statement line items: the DB is a faithful mirror of what
@@ -58,35 +60,38 @@ def get_all_facts(company: edgar.Company) -> list:
     return entity_facts.get_all_facts()
 
 
-def collect_concepts(facts: Sequence) -> list[ConceptRow]:
-    """Unique `(taxonomy, name)` pairs across a company's facts."""
-    seen: set[tuple[str, str]] = set()
+def collect_concepts(facts: Sequence[FinancialFact]) -> list[ConceptRow]:
+    """Unique concepts across a company's facts.
+
+    Deduplicated on the full `taxonomy:name` string EDGAR gives us, so the split
+    runs once per concept instead of once per fact.
+    """
+    seen: set[str] = set()
     concepts: list[ConceptRow] = []
 
     for fact in facts:
-        taxonomy, name = fact.concept.split(":", 1)
-        if (taxonomy, name) in seen:
+        if fact.concept in seen:
             continue
-        seen.add((taxonomy, name))
+        seen.add(fact.concept)
+        taxonomy, name = fact.concept.split(":", 1)
         concepts.append(ConceptRow(taxonomy=taxonomy, name=name, label=fact.label))
 
     return concepts
 
 
-def iter_fact_rows(
-    facts: Sequence,
+def fact_rows(
+    facts: Sequence[FinancialFact],
     cik: int,
-    concept_ids: dict[tuple[str, str], int],
-) -> Iterator[FactRow]:
-    """Yield DB-ready fact rows; `concept_ids` comes from the concepts upsert.
+    concept_ids: dict[str, int],
+) -> list[FactRow]:
+    """DB-ready fact rows; `concept_ids` maps `taxonomy:name` to its id.
 
     `frame` is not exposed by `FinancialFact`, so that column stays NULL.
     """
-    for fact in facts:
-        taxonomy, name = fact.concept.split(":", 1)
-        yield FactRow(
+    return [
+        FactRow(
             cik=cik,
-            concept_id=concept_ids[(taxonomy, name)],
+            concept_id=concept_ids[fact.concept],
             unit=fact.unit,
             value=fact.numeric_value,
             start_date=fact.period_start,
@@ -98,3 +103,5 @@ def iter_fact_rows(
             filing_fy=fact.fiscal_year or None,
             filing_fp=fact.fiscal_period or None,
         )
+        for fact in facts
+    ]

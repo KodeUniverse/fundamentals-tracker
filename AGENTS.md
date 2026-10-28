@@ -232,6 +232,9 @@ design writeup.
   deps are in `fundamental-data-feed/.venv`.
 - `upsert_concepts` reads the whole `concepts` table deliberately — it is small
   shared reference data, and it avoids tracking newly-created ids.
+- Each `docker compose build` of the feed leaves a ~2.5 GB dangling image, and the
+  root filesystem here is only 125 GB. If builds fail with "No space left on
+  device", run `docker image prune -f` (dangling only) before touching anything else.
 
 ## Definition of done, per feature
 

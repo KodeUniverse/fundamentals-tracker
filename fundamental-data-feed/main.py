@@ -24,7 +24,7 @@ import threading
 import edgar
 
 from db import connect, insert_facts, upsert_concepts, upsert_entity
-from facts import build_entity, collect_concepts, get_all_facts, iter_fact_rows
+from facts import build_entity, collect_concepts, fact_rows, get_all_facts
 
 log = logging.getLogger("feed")
 
@@ -39,7 +39,7 @@ def ingest_ticker(conn, ticker: str) -> None:
     with conn.transaction():
         upsert_entity(conn, entity.cik, entity.entity_name, entity.ticker)
         concept_ids = upsert_concepts(conn, concepts)
-        rows = list(iter_fact_rows(facts, entity.cik, concept_ids))
+        rows = fact_rows(facts, entity.cik, concept_ids)
         inserted = insert_facts(conn, rows)
 
     log.info(
