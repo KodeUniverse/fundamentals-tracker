@@ -4,27 +4,13 @@ A Postgres-backed service that ingests three public sources — SEC EDGAR XBRL f
 SEC 10-K narrative, and Yahoo Finance prices — and answers questions that span the
 reported numbers and the prose in the filings.
 
-Two services share one database: a poller that refreshes the sources, and a
-read-only FastAPI service with a natural-language endpoint on top. Everything runs
-from one command, and a committed snapshot means it works with no network at all.
-
 ## Quick start
 
 ```bash
 cp .env.example .env          # set EDGAR_IDENTITY and the LLM config
 docker compose up -d --build
 ```
-
 The stack comes up on `http://localhost:8000`. Interactive API docs: `/docs`.
-
-On a fresh volume the database is created from `database/init.sql` and then seeded
-from `snapshot/tracker.sql.gz`, so the API answers immediately. The feed continues
-with a live cycle; because ingestion is idempotent, it reports `0 new rows`.
-
-```bash
-docker compose logs -f fundamental-data-feed   # watch a cycle
-curl -s localhost:8000/entities | jq
-```
 
 ## Configuration
 
@@ -39,9 +25,6 @@ All configuration is environment variables; `.env` is read by compose.
 | `RUN_ONCE` | single pass then exit |
 | `SNAPSHOT_DIR` / `SEED_FROM_SNAPSHOT` | seed an empty database from the committed dump |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | used by `POST /ask` |
-
-`TICKERS` defaults to the five tracked companies (`NVDA,MSFT,AAPL,GOOGL,ETN`), but
-nothing in the code assumes them: swapping the list is enough.
 
 ### Pointing at your own model
 
@@ -157,10 +140,6 @@ curl -s -X POST localhost:8000/ask -H 'Content-Type: application/json' \
   "grounding": {"ok": true, "unverified_numbers": []}
 }
 ```
-
-That refusal is produced by a keyword guard before the model is called, so it
-cannot be talked into inventing a guidance figure.
-
 ## API
 
 | Route | Returns |
@@ -177,9 +156,6 @@ cannot be talked into inventing a guidance figure.
 | `GET /entities/{ticker}/filings/{section}` | one whole section (`risk_factors` or `mda`) |
 | `GET /narrative/search` | ranked full-text search over filing chunks |
 | `POST /ask` | natural-language question routed through tools |
-
-Money is in USD as reported, margins and growth are fractions (`0.4691` = 46.91%),
-and a tag the company never reported comes back null rather than estimated.
 
 ## The agent
 
@@ -208,40 +184,3 @@ cd fundamental-data-feed && uv run pytest   # 45 tests
 None need a database or a network. The tool loop is tested with a fake chat
 function, so agent behaviour is verifiable without an API key.
 
-## Snapshot
-
-`snapshot/tracker.sql.gz` (2 MB) contains the whole universe: 125,886 facts, 20
-filing sections, 361 chunks, 12,560 price bars.
-
-```bash
-scripts/snapshot.sh            # refresh the dump from the running database
-scripts/restore_snapshot.sh    # load it back (replaces the database)
-```
-
-The feed loads it automatically when the database is empty and
-`SEED_FROM_SNAPSHOT=true`.
-
-## Layout
-
-```
-database/init.sql          schema
-snapshot/                  committed dump
-fundamental-data-feed/     poller
-  sources/                 EDGAR XBRL, 10-K narrative, Yahoo prices
-  snapshot.py              seed from the dump
-server/                    FastAPI service
-  analysis/                metrics, valuation, paragraph diff
-  llm/                     tool schemas, tools, agent loop
-scripts/                   database and snapshot helpers
-WRITEUP.md                 design writeup
-Notes.md                   decisions, cuts, and known gaps
-```
-
-## Known gaps
-
-- P/E uses the latest annual EPS, not a trailing-twelve-month rollup, and returns
-  `period_end` so staleness is visible.
-- The scope guard is keyword-based; a paraphrase that avoids the trigger words
-  reaches the model, where the system prompt is the second line of defence.
-- No 10-K/A handling, no quarterly metrics, no free cash flow.
-- No schema migrations: schema changes mean `docker compose down -v` and a re-ingest.
