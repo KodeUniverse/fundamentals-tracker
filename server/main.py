@@ -393,10 +393,10 @@ def prices(
 def entity_valuation(ticker: str) -> Valuation:
     """Trailing P/E and P/S joining the latest close with the latest annual year.
 
-    P/E is price divided by reported annual diluted EPS, as the brief describes a
-    trailing multiple. It is not a twelve-month rollup, so `period_end` is
-    returned alongside it: an annual figure can be months old, and the number is
-    only meaningful with its as-of dates. No forward estimates are involved.
+    P/E is price divided by reported annual diluted EPS. It is not a twelve-month
+    rollup, so `period_end` is returned alongside it: an annual figure can be
+    months old, and the number is only meaningful with its as-of dates. No forward
+    estimates are involved.
     """
     entity = _entity_or_404(ticker)
     payload = valuation.compute_valuation(entity["cik"])

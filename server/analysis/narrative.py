@@ -1,7 +1,7 @@
 """Paragraph-level comparison of two versions of a filing section.
 
-Risk factors are the one question in the brief that is a set difference rather
-than a retrieval match ("what did they add"), and two sections of 115,000
+Risk factors are the one place where the interesting question is a set difference
+rather than a retrieval match ("what did they add"), and two sections of 115,000
 characters do not fit in a prompt. Splitting on the blank lines the ingest
 preserved and comparing word sets is crude, but it runs in milliseconds and
 returns paragraphs a person can check against the filing.

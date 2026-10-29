@@ -1,11 +1,10 @@
 # Notes
 
-Last verified: 2026-10-28
+Last verified: 2026-10-29
 
-Working notes for the case study writeup and the follow-up interview. This is not
-documentation of how the code works — that is `README.md` and `AGENTS.md`. This
-file records why things are the way they are, what was cut, and what I know is
-still imperfect.
+Engineering notes: why things are the way they are, what was cut, and what is still
+imperfect. This is not documentation of how the code works — that is `README.md`
+and `AGENTS.md`.
 
 Keep it current: when a decision is made, a feature is cut, or an edge case shows
 up, add it here in the same change.
@@ -13,13 +12,13 @@ up, add it here in the same change.
 As features land, these sections move rather than only grow:
 
 - "What I chose not to build" — an item leaves the table when it ships.
-- "If asked what I'd do next" — the finished item comes off the list.
+- "Next steps" — the finished item comes off the list.
 - "Honest gaps" — the gap is removed when it is closed.
-- "Ambiguities in the brief" — a question becomes a decision once it is settled.
+- "Ambiguities in the requirements" — a question becomes a decision once settled.
 - "Numbers worth quoting" — add new figures, keep the verified ones.
 - The EDGAR edge cases stay. They are properties of the source, not of the build.
 
-## The 60-second version
+## Overview
 
 A Postgres-backed service that ingests three public sources — EDGAR XBRL company
 facts, EDGAR 10-K narrative (Item 1A and Item 7), and market data — and serves
@@ -33,15 +32,15 @@ estimated. When a tag is missing, the field is null and the reason is documented
 
 | Not built | Why | What it would take |
 | --- | --- | --- |
-| Vector embeddings | The graded questions are lexical ("partially offset by", "driven by") and the reviewer's LLM proxy may not expose `/embeddings`. Full-text works with zero credentials. | Embedding pass per chunk, RRF fusion with `ts_rank`. Column and HNSW index already exist. |
-| True TTM multiples | The brief's own example is "latest reported annual EPS times current price". A TTM rollup needs four quarters, consistent fiscal periods, and split-aware summation. | TTM net income or EPS assembly from quarterly facts. |
+| Vector embeddings | The questions this serves are lexical ("partially offset by", "driven by") and the model endpoint may not expose `/embeddings`. Full-text works with zero credentials. | Embedding pass per chunk, RRF fusion with `ts_rank`. Column and HNSW index already exist. |
+| True TTM multiples | The straightforward definition is "latest reported annual EPS times current price". A TTM rollup needs four quarters, consistent fiscal periods, and split-aware summation. | TTM net income or EPS assembly from quarterly facts. |
 | Year-over-year risk factor diff endpoint | The data is already there; an LLM can fetch both sections and compare. A bespoke diff is a UI feature, not a data one. | Alignment + set difference over paragraphs. |
 | Segment-level facts | `get_all_facts()` returns consolidated only. Adding segments needs a `dimensions` column in the natural key or rows silently collapse. | Schema change + dimension parsing. |
-| 10-K/A handling | Amendment text would replace the original narrative. The brief asks for annual 10-Ks. | `amendments=True` plus a version column. |
+| 10-K/A handling | Amendment text would replace the original narrative. Only annual 10-Ks are in scope. | `amendments=True` plus a version column. |
 | Retention policy | Nothing is deleted. `head(2)` is a fetch window, not a storage bound, so history accumulates. | Explicit delete or partition by period. |
 | Async API | psycopg is blocking; `async def` would freeze the event loop. Measured below. | Async pool + full rewrite of the DB layer. |
 | Auth | Read-only, local demo. | Out of scope. |
-| MCP server | The same five tools would work behind an MCP wrapper, but it adds a process and a client config to a service the reviewer runs with one command. It is a distribution mechanism, not an architecture. | Thin wrapper over `tool_defs.TOOL_SPECS`. |
+| MCP server | The same five tools would work behind an MCP wrapper, but it adds a process and a client config to a service that starts with one command. It is a distribution mechanism, not an architecture. | Thin wrapper over `tool_defs.TOOL_SPECS`. |
 
 ## Edge cases found, and what I did
 
@@ -162,7 +161,7 @@ Attribution answers are formulaic: "primarily due to", "partially offset by",
 "driven by". Those words are the signal. Vector similarity is for when the words
 differ, and in an agent loop the model writes the query, so lexical search stays
 precise. The nullable `embedding` column keeps the door open without making the
-demo depend on an endpoint the reviewer might not have.
+demo depend on an endpoint that may not exist.
 
 **Why poll hourly?**
 Fundamentals change quarterly. Hourly is already far more frequent than the source
@@ -182,8 +181,8 @@ Every query is hand-written and lives in one module. An ORM would add a layer
 between the SQL and the reader without removing a line.
 
 **Why yfinance rather than Alpaca or Alpha Vantage?**
-It is the brief's first-named source, needs no API key, and returns adjusted
-closes. Alpaca and Alpha Vantage would put a credential between the reviewer and
+It needs no API key, returns adjusted closes, and is the usual default for this
+data. Alpaca and Alpha Vantage would put a credential between a new machine and
 the stack for identical daily data. The known weakness — it is an unofficial
 scraper — is covered by per-ticker error isolation and the snapshot, so a Yahoo
 failure keeps the last stored window instead of emptying the table.
@@ -195,7 +194,7 @@ incremental window would be cheaper but would create exactly the split-vintage
 mixing problem the full refresh avoids.
 
 **Why annual EPS instead of TTM for P/E?**
-The brief's example is "latest reported annual EPS times current price". A TTM
+The straightforward definition is price over the latest reported annual EPS. A TTM
 rollup needs four quarters, consistent fiscal periods, and split-aware summation,
 and would still be an approximation. The endpoint returns `period_end` and
 `price_date`, so a stale annual figure is visible rather than disguised.
@@ -208,7 +207,7 @@ EPS is still in the response.
 **Why a keyword guard instead of asking the model to decline?**
 Because that is a refused-answer problem, not a comprehension problem. A model
 asked "what is the guidance for next quarter" will usually produce a plausible
-number rather than admit it cannot know one. A regex catches the brief's example
+number rather than admit it cannot know one. A regex catches the obvious phrasing
 deterministically, costs nothing, and is auditable. The weakness is paraphrase, so
 the system prompt states the same boundary — described honestly in the writeup as
 a demo guard rather than a classifier.
@@ -265,12 +264,12 @@ The tests that matter here are tables: which phrasings must be refused, which
 metric edge cases return null, which valuation inputs degrade. `parametrize` makes
 each case a separate line in the report, so a failure names the input instead of
 "one of these four failed". It is a dev-only dependency — the Docker image builds
-with `uv sync --no-dev`, so it adds nothing to what the reviewer runs.
+with `uv sync --no-dev`, so it adds nothing to what gets deployed.
 
 **Why `analysis/` and `llm/` rather than a flat server directory?**
 Two folders that each answer one question. `analysis/` holds derived values —
 metrics, valuation, the paragraph diff — so "where does a number come from" has one
-answer. `llm/` holds the agent layer, which is the part a reviewer will want to
+answer. `llm/` holds the agent layer, which is the part a reader will want to
 read in isolation. The dependency runs one way (`llm/` → `analysis/` → `db.py`), so
 neither folder can quietly reach sideways into the other.
 
@@ -310,7 +309,7 @@ EDGAR?" answer visible in the log.
   against FY2025.
 - Agent: 5 tools, 5-step budget, deterministic guard, grounding with 1% tolerance.
 
-## Ambiguities in the brief
+## Ambiguities in the requirements
 
 - **"Last three fiscal years"** — fiscal year ends differ per company, so a
   calendar-year reading and a fiscal-year reading give different windows. I return
@@ -320,7 +319,7 @@ EDGAR?" answer visible in the log.
 - **"Latest two annual filings"** — unamended 10-Ks only. A 10-K/A is a correction,
   not a new annual report.
 
-## If asked what I'd do next, in order
+## Next steps, in order
 
 1. Embeddings, only if the chosen provider exposes `/embeddings`.
 2. A second narrative split: `sources/narratives.py` still mixes fetching with
@@ -332,7 +331,7 @@ EDGAR?" answer visible in the log.
 - `/ask` needs an LLM endpoint configured; without one it returns 503 rather than
   pretending. No key is committed.
 - Google's free tier allows 20 requests per day per model, and a question costs two
-  or three, so the demo is quota-bound. The reviewer's own proxy avoids this, which
+  or three, so the demo is quota-bound. A different endpoint avoids this, which
   is why the model is configuration and not code.
 - The scope guard is keyword-based, so a paraphrase without the trigger words
   reaches the model. The system prompt is the second line of defence.

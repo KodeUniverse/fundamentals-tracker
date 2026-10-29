@@ -40,8 +40,8 @@ All configuration is environment variables; `.env` is read by compose.
 | `SNAPSHOT_DIR` / `USE_SNAPSHOT_IF_NO_NETWORK` | seed an empty database from the committed dump |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | used by `POST /ask` |
 
-`TICKERS` defaults to the graded five (`NVDA,MSFT,AAPL,GOOGL,ETN`), but nothing in
-the code assumes them: swapping the list is enough.
+`TICKERS` defaults to the five tracked companies (`NVDA,MSFT,AAPL,GOOGL,ETN`), but
+nothing in the code assumes them: swapping the list is enough.
 
 ### Pointing at your own model
 

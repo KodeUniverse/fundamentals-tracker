@@ -1,7 +1,7 @@
 """Extract the 10-K narrative sections and split them for retrieval.
 
-Two filings per company: the brief compares the latest annual report against the
-prior one, so both are stored whole and compared as contiguous text. Chunks are
+Two filings per company: the latest annual report is compared against the prior
+one, so both are stored whole and compared as contiguous text. Chunks are
 derived from the stored text and exist for ranked retrieval, not for storage.
 
 As with `facts.py`, the caller constructs one `Company` per ticker per cycle.

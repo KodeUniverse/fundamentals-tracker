@@ -10,26 +10,23 @@ exist, so keeping it accurate is part of the work, not cleanup afterwards.
 
 ## What this project is
 
-"Fundamentals Tracker" — Schonfeld Strategic Advisors SWE case study (FE COO team).
-A backend service that tracks company fundamentals from three public sources and
-answers natural-language questions spanning both the reported numbers and the
-narrative in SEC filings.
+"Fundamentals Tracker" — a backend service that tracks company fundamentals from
+three public sources and answers natural-language questions spanning both the
+reported numbers and the narrative in SEC filings.
 
-Source of truth for requirements: `Software Engineer FE Case Study NY.txt`.
-Fixed graded universe: NVDA, MSFT, AAPL, GOOGL, ETN — but it must come from
-configuration (`TICKERS`), never hardcoded in code.
+Default universe: NVDA, MSFT, AAPL, GOOGL, ETN. It comes from configuration
+(`TICKERS`), never hardcoded in code.
 
 ## Notes.md
 
-`Notes.md` is the running log for the case study writeup and the follow-up
-interview: the decisions and their reasons, what was cut and why, edge cases
-handled or knowingly skipped, and the numbers worth quoting. It is not code
-documentation.
+`Notes.md` is the decision log: the reasons behind the design, what was cut and
+why, edge cases handled or knowingly skipped, and the numbers worth quoting. It is
+not code documentation.
 
 Update it in the same change whenever a decision settles, a feature is cut, or a
-data quirk turns up. The writeup and interview are graded on exactly that
-reasoning, and it costs nothing to record it while it is fresh. Keep the tone
-plain and honest — known gaps belong in the file, not only the wins.
+data quirk turns up. The reasoning is the part that gets lost first, and it costs
+nothing to record while it is fresh. Keep the tone plain and honest — known gaps
+belong in the file, not only the wins.
 
 ## Hard requirements (non-negotiable)
 
@@ -49,8 +46,8 @@ plain and honest — known gaps belong in the file, not only the wins.
    out-of-scope questions (e.g. "forward guidance") rather than invent.
 6. `docker compose up` must bring up the full stack. LLM base URL, API key, and
    model name come from environment variables only — never hardcoded.
-7. Deliverables also include a README (one-command run, env vars, provider +
-   exact model, 2–3 example interactions) and a 1–2 page design writeup.
+7. The repo also includes a README (one-command run, env vars, provider and exact
+   model, example interactions) and a design writeup in `WRITEUP.md`.
 
 ## Architecture
 
@@ -90,8 +87,8 @@ scripts/inspect_db.sh              psql wrapper for the running container
 scripts/snapshot.sh                dump the database to snapshot/
 scripts/restore_snapshot.sh        load that dump back
 test_llm.sh                        exercise the LLM endpoint without the agent
-WRITEUP.md                         the 1-2 page design writeup deliverable
-Notes.md                           decisions, cuts, edge cases for writeup + interview
+WRITEUP.md                         design writeup
+Notes.md                           decisions, cuts, and known gaps
 ```
 
 Module boundary rule: nothing under `sources/` imports `db`, `db.py` never imports
@@ -178,8 +175,8 @@ Semantics that matter:
   the system prompt also states the boundary.
 - "forward" is matched only in front of a metric (`forward P/E`, `forward EPS`).
   Bare "forward" would refuse a legitimate question about the forward-looking
-  statements inside a 10-K. A reviewer found `forward P/E` slipping through the
-  first version of the guard; the test suite now has both cases.
+  statements inside a 10-K. The first version of the guard let `forward P/E`
+  through; the test suite now has both cases.
 - The model never computes. Tools return margins, growth, multiples, rankings and
   paragraph diffs already calculated, so the only numbers in an answer are ones a
   tool produced. `grounding` re-checks that with a 1% tolerance, strips
@@ -217,7 +214,7 @@ Semantics that matter:
 
 ## Coding style
 
-The bar: a reviewer should be able to read a file top to bottom and understand it
+The bar: a reader should be able to read a file top to bottom and understand it
 without running it. Simple beats clever, every time.
 
 **Do**
@@ -329,7 +326,7 @@ Read env at the entrypoint and pass values down; don't sprinkle `os.getenv`
 through library functions. (`db.connect()` reading `DATABASE_URL` is the
 deliberate exception — it is the one place a connection is opened.)
 
-## Current status (last verified 2026-10-28)
+## Current status (last verified 2026-10-29)
 
 Update this block as part of any change that moves the project forward: a new
 source, table, endpoint, or env var, a decision that is now settled, or work that
@@ -406,8 +403,7 @@ Not started: embedding pass (`filing_chunks.embedding` is NULL everywhere).
 
 ## Definition of done, per feature
 
-Every feature is graded against six dimensions: engineering quality, system
-design, AI integration, product judgment, scope, and communication. So:
+A feature is done when all of the following hold:
 
 1. It maps to a numbered requirement above. If it doesn't, ask why it exists.
 2. It works from a clean `docker compose up` with no manual steps and no live
@@ -425,8 +421,7 @@ design, AI integration, product judgment, scope, and communication. So:
 
 ## Acceptance test
 
-The six questions in the brief are the real acceptance test. Before calling the
-service done, each must work end to end:
+Before calling the service done, each of these must work end to end:
 
 1. "What were NVDA's revenue and net income for the last three fiscal years?" (structured)
 2. "Which of the five companies had the highest gross margin last year?" (derived, comparative)
@@ -437,6 +432,6 @@ service done, each must work end to end:
 
 ## Scope discipline
 
-The brief allots 8–10 hours and rewards deliberate cuts over feature count.
-Prefer a working, honest prototype with documented gaps. When you cut something,
-record it in the writeup — the reviewers explicitly ask what you left out and why.
+Deliberate cuts beat feature count. Prefer a working, honest prototype with
+documented gaps over a broad half-finished one. When you cut something, record it
+in the writeup: what was left out and why is part of the design, not an apology.

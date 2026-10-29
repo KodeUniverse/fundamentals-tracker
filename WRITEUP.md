@@ -112,7 +112,7 @@ ranking, valuation, filing search, and a year-over-year section diff.
 | Step | LLM | Why |
 | --- | --- | --- |
 | Out-of-scope detection | No | A keyword guard refuses guidance and forecasts before any model call. Models will invent a plausible number rather than admit they cannot know one. |
-| Tool selection | **Yes** | This is the routing the brief asks for; it is the model's job |
+| Tool selection | **Yes** | Deciding whether a question needs numbers, text, or both |
 | Arithmetic, ranking, diffing | No | Computed in SQL or Python and returned as results |
 | Final prose and citations | **Yes** | Language is what it is good at |
 | Number verification | No | A check, not a judgment: every figure in the answer must appear in a tool result |
@@ -138,10 +138,10 @@ five well-described tools, not twelve thin endpoint wrappers.
 
 ## Tradeoffs and what was left out
 
-- **No vector embeddings.** Full-text search answers the graded questions, needs no
-  API key, and works when the reviewer's proxy exposes no `/embeddings` endpoint.
-  The column and index exist; nothing depends on them.
-- **Annual EPS, not a TTM rollup.** The brief's own example is annual EPS. A TTM
+- **No vector embeddings.** Full-text search answers these questions, needs no API
+  key, and works when the endpoint in front of the model exposes no `/embeddings`
+  route. The column and index exist; nothing depends on them.
+- **Annual EPS, not a TTM rollup.** The straightforward definition is annual EPS. A TTM
   figure needs four quarters, consistent fiscal periods, and split-aware
   summation, and would still be an approximation. The as-of date is returned so
   staleness is visible.
