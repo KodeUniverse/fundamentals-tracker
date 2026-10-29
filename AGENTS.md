@@ -64,23 +64,40 @@ Shared `app-net` bridge network. Compose project name: `fundamentals-tracker`.
 
 ```
 database/init.sql                  schema, applied only on an EMPTY pgdata volume
+snapshot/tracker.sql.gz            committed dump, loaded into an empty database
 fundamental-data-feed/
   main.py                          env config, cycle loop, per-ticker transaction
-  facts.py                         EDGAR XBRL fetch + normalize -> Entity/ConceptRow/FactRow
-  narratives.py                    10-K Item 1A + Item 7 fetch, cleanup, chunking
-  prices.py                        Yahoo Finance bars -> PriceRow
   db.py                            psycopg3 persistence (upsert + bulk insert)
-  tests/                           unittest suite for chunking and price conversion
-server/main.py                     FastAPI routes and response models
-server/db.py                       connection pool and all SQL
-server/metrics.py                  derived metric math, pure functions
-server/tests/                      unittest suite for the metric math
+  snapshot.py                      seed an empty database from the committed dump
+  sources/
+    facts.py                       EDGAR XBRL fetch + normalize -> Entity/ConceptRow/FactRow
+    narratives.py                  10-K Item 1A + Item 7 fetch, cleanup, chunking
+    prices.py                      Yahoo Finance bars -> PriceRow
+  tests/                           pytest suite for chunking, prices, snapshot
+server/
+  main.py                          FastAPI routes and response models
+  db.py                            connection pool and all SQL
+  analysis/
+    metrics.py                     reported and derived metric math
+    valuation.py                   cross-source valuation, shared by route and tools
+    narrative.py                   paragraph diff for year-over-year sections
+  llm/
+    agent.py                       scope guard, tool loop, grounding check
+    tool_defs.py                   tool schemas and ToolResult
+    tools.py                       tool implementations over the database
+  tests/                           pytest suite for metrics, valuation, diff, agent
+scripts/inspect_db.sh              psql wrapper for the running container
+scripts/snapshot.sh                dump the database to snapshot/
+scripts/restore_snapshot.sh        load that dump back
+test_llm.sh                        exercise the LLM endpoint without the agent
+WRITEUP.md                         the 1-2 page design writeup deliverable
 Notes.md                           decisions, cuts, edge cases for writeup + interview
 ```
 
-Module boundary rule: `facts.py` and `narratives.py` never import `db`, `db.py`
-never imports `edgar`, and no SQL ever lives in `main.py` or in the server's
-request handlers.
+Module boundary rule: nothing under `sources/` imports `db`, `db.py` never imports
+`edgar`, and no SQL ever lives in `main.py` or in the server's request handlers.
+The server depends one way only: `llm/` → `analysis/` → `db.py`, with `main.py`
+wiring them together.
 
 ## API
 
@@ -99,6 +116,7 @@ Read-only JSON; interactive docs at `/docs`.
 | `GET /entities/{ticker}/filings` | stored narrative sections with chunk counts, newest first |
 | `GET /entities/{ticker}/filings/{section}` | one whole section (`risk_factors` or `mda`); `year` defaults to the latest filing |
 | `GET /narrative/search` | ranked full-text search over chunks; `q`, optional `ticker`, `section`, `year`, `limit` |
+| `POST /ask` | natural-language question; returns the answer, tools used, citations, and a grounding check |
 
 Money is in USD as reported, margins and growth are fractions (0.469 = 46.9%),
 and a tag the company never reported comes back null rather than estimated.
@@ -142,6 +160,10 @@ Semantics that matter:
   whole history when a split happens, so the stored window is only internally
   consistent if it is refreshed at the current scale. `close` is split-adjusted
   and not dividend-adjusted; `adj_close` includes dividends.
+- `sources/prices.py` filters `Pandas4Warning` at import. The filter must stay
+  *after* `import yfinance`: pandas registers its own warning filters when it is
+  imported, and `filterwarnings` prepends, so installing it earlier silently does
+  nothing. Delete the block once yfinance stops using `inplace=`.
 - Share counts need a tag fallback: Alphabet reports shares per class with a
   dimension, which `get_all_facts()` drops, so `dei:EntityCommonStockShares-
   Outstanding` is absent for GOOGL and `us-gaap:CommonStockSharesOutstanding` is
@@ -149,6 +171,30 @@ Semantics that matter:
 - `/valuation` uses the latest ANNUAL EPS, not a trailing-twelve-month rollup, and
   returns `period_end` so the staleness is visible. A negative EPS returns a null
   P/E rather than a negative multiple.
+- `POST /ask` refuses forward-looking questions with a keyword regex before any
+  model call. That is deliberate: models will produce a plausible guidance number
+  rather than admit they cannot know one. The keyword list is a demo guard, not a
+  classifier — a paraphrase that avoids the words reaches the model, which is why
+  the system prompt also states the boundary.
+- "forward" is matched only in front of a metric (`forward P/E`, `forward EPS`).
+  Bare "forward" would refuse a legitimate question about the forward-looking
+  statements inside a 10-K. A reviewer found `forward P/E` slipping through the
+  first version of the guard; the test suite now has both cases.
+- The model never computes. Tools return margins, growth, multiples, rankings and
+  paragraph diffs already calculated, so the only numbers in an answer are ones a
+  tool produced. `grounding` re-checks that with a 1% tolerance, strips
+  `10-K`-style form names before extracting figures, and accepts a ratio written
+  as a percentage (0.7107 in the payload, "71.07%" in the answer).
+- Tool failures (unknown ticker, malformed arguments) are returned to the model as
+  an error payload, not raised. It can correct itself once; the step budget stops
+  a loop.
+- The snapshot is loaded only when `facts` is empty, so a partially populated
+  database is left alone instead of being overwritten. The dump is made with
+  `--clean`, so `scripts/restore_snapshot.sh` replaces the schema — it is a reset
+  tool, not a merge.
+- The emptiness check runs inside its own transaction. An open transaction holds a
+  lock on `facts`, and the dump's `DROP TABLE` then blocks forever — which is
+  exactly what happened the first time the loader ran.
 
 ## Conventions (already decided — don't relitigate)
 
@@ -244,18 +290,23 @@ docker compose logs -f fundamental-data-feed # follow ingest
 docker compose down -v                       # WARNING: destroys the volume
 docker compose run --rm -e RUN_ONCE=1 fundamental-data-feed   # single pass
 
-# inspect
-docker exec fundamentals-tracker-db psql -U tracker -d tracker -c "
-  SELECT e.ticker, count(*) FROM facts f JOIN entities e USING (cik) GROUP BY 1;"
+# inspect the database (no psql needed on the host)
+scripts/inspect_db.sh                                  # interactive session
+scripts/inspect_db.sh "SELECT e.ticker, count(*) FROM facts f
+  JOIN entities e USING (cik) GROUP BY 1;"             # one query
+
+# snapshot: dump after an ingest, restore to get back to a known state
+scripts/snapshot.sh                                    # writes snapshot/tracker.sql.gz
+scripts/restore_snapshot.sh                            # replaces the database
 
 # local run (deps live in fundamental-data-feed/.venv)
 fundamental-data-feed/.venv/bin/python fundamental-data-feed/main.py
 
-# metric math tests (stdlib unittest, no database needed)
-cd server && python3 -m unittest discover -v
+# server tests: metrics, valuation, diff, scope guard, tool loop (no database, no network)
+cd server && uv run pytest
 
-# chunking tests (needs the feed venv, which has edgartools)
-cd fundamental-data-feed && .venv/bin/python -m unittest discover -v
+# feed tests: chunking and price conversion (needs edgartools and pandas)
+cd fundamental-data-feed && uv run pytest
 ```
 
 `RUN_ONCE=1` exits after one cycle — use it for tests, snapshot builds, and CI.
@@ -271,8 +322,8 @@ cd fundamental-data-feed && .venv/bin/python -m unittest discover -v
 | `POLL_INTERVAL_SECONDS` | feed cycle interval (default 3600) |
 | `RUN_ONCE` | single pass then exit |
 | `LOG_LEVEL` | default INFO |
-| `SNAPSHOT_DIR` / `USE_SNAPSHOT_IF_NO_NETWORK` | offline replay (declared, NOT yet implemented) |
-| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | LLM config (declared, NOT yet used) |
+| `SNAPSHOT_DIR` / `USE_SNAPSHOT_IF_NO_NETWORK` | when enabled and `facts` is empty, the feed loads `<SNAPSHOT_DIR>/tracker.sql.gz` before its first cycle; live ingestion then upserts over it |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | used by `POST /ask`; any OpenAI-compatible `/chat/completions` endpoint. Without base URL and model, `/ask` returns 503 |
 
 Read env at the entrypoint and pass values down; don't sprinkle `os.getenv`
 through library functions. (`db.connect()` reading `DATABASE_URL` is the
@@ -300,18 +351,23 @@ Done:
   company, 20 sections and 361 chunks, stored whole plus chunked for retrieval.
 - Market data: ten years of daily bars per company from Yahoo Finance, 12,560
   rows, refetched and rescaled each cycle.
+- Snapshot: a 2 MB committed dump. An empty database is seeded from it before the
+  first cycle, so the stack starts and serves with no network.
 - Trailing valuation: P/E on latest annual diluted EPS and P/S on market cap
   over annual revenue, with price date and period end returned.
+- Agent layer on `POST /ask`: deterministic scope guard, OpenAI-compatible tool
+  loop over five computed tools, citations, and a grounding check on the numbers.
 - Postgres full-text retrieval over chunks works with no LLM credentials.
 - Read API on port 8000: entities, concept catalog, filtered raw facts,
   per-concept time series, annual metrics with margins and YoY growth, prices,
-  valuation, narrative sections, ranked narrative search.
-- 22 unittest tests covering metric and valuation math (`server/tests`) and 8
-  covering chunking and price conversion (`fundamental-data-feed/tests`).
+  valuation, narrative sections, ranked narrative search, natural-language ask.
+- 66 pytest tests covering metric and valuation math, paragraph diffing, the
+  scope guard, grounding, and the tool loop (`server/tests`), plus 45 covering
+  chunking, price conversion, and snapshot discovery (`fundamental-data-feed/tests`).
+- README with the one-command run, env vars, the exact model, and real example
+  interactions captured from a running stack.
 
-Not started: embedding pass (`filing_chunks.embedding` is NULL everywhere),
-year-over-year risk factor diffing, snapshot read/write, LLM routing layer,
-README, design writeup.
+Not started: embedding pass (`filing_chunks.embedding` is NULL everywhere).
 
 ## Gotchas
 

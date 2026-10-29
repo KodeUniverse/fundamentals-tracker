@@ -10,11 +10,18 @@ database.
 
 from __future__ import annotations
 
+import warnings
 from datetime import date, timedelta
 from typing import Any, TypedDict
 
 import pandas as pd
 import yfinance as yf
+from pandas.errors import Pandas4Warning
+
+# yfinance 1.7.0 still calls pandas APIs that pandas 3.1 deprecates. Set this
+# after importing yfinance: pandas registers its own filters at import time and
+# filterwarnings prepends, so a filter installed earlier loses to them.
+warnings.filterwarnings("ignore", category=Pandas4Warning)
 
 # Long enough to span both recent splits (AAPL 2020, NVDA 2024), which is what
 # makes the adjusted series visibly continuous rather than a cliff.

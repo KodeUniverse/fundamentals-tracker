@@ -57,10 +57,12 @@ services:
       SNAPSHOT_DIR: /app/snapshots
       USE_SNAPSHOT_IF_NO_NETWORK: ${USE_SNAPSHOT_IF_NO_NETWORK:-true}
     volumes:
-      # Mount seed files for offline review
-      - ./GOOGL_facts.json:/app/snapshots/GOOGL_facts.json:ro
+      # Committed dump the feed seeds an empty database from; see scripts/snapshot.sh.
+      - ./snapshot:/app/snapshots:ro
       - ./database:/app/database:ro
-    restart: on-failure
+    # A long-running poller should come back even after a clean exit; `on-failure`
+    # leaves the stack without a poller if anything sends SIGTERM.
+    restart: unless-stopped
 
   server:
     build:

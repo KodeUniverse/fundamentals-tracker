@@ -41,6 +41,7 @@ estimated. When a tag is missing, the field is null and the reason is documented
 | Retention policy | Nothing is deleted. `head(2)` is a fetch window, not a storage bound, so history accumulates. | Explicit delete or partition by period. |
 | Async API | psycopg is blocking; `async def` would freeze the event loop. Measured below. | Async pool + full rewrite of the DB layer. |
 | Auth | Read-only, local demo. | Out of scope. |
+| MCP server | The same five tools would work behind an MCP wrapper, but it adds a process and a client config to a service the reviewer runs with one command. It is a distribution mechanism, not an architecture. | Thin wrapper over `tool_defs.TOOL_SPECS`. |
 
 ## Edge cases found, and what I did
 
@@ -97,6 +98,13 @@ event, which the full-window refetch removes.
 because a split rescales history retroactively. Facts are `DO NOTHING` on
 conflict; prices are `DO UPDATE`. That asymmetry is deliberate and worth
 explaining rather than hiding.
+
+**An open transaction blocked the snapshot load.** The emptiness check ran a
+`SELECT` on the feed's long-lived connection, which left a transaction open and
+held a lock on `facts`. The dump's `DROP TABLE facts` then waited forever. The
+fix is one line — run the check inside `with conn.transaction()` — but it is the
+kind of deadlock that only appears when a subprocess touches the same tables as
+the parent connection.
 
 **Chunk size overshoot.** The carry-over tail was appended after the size check,
 so a 3,995-character paragraph plus overlap produced a 4,296-character chunk.
@@ -197,6 +205,87 @@ A negative multiple is not a valuation signal. Returning `-12.4` would invite th
 reader to compare it with a positive one. The API says null and the underlying
 EPS is still in the response.
 
+**Why a keyword guard instead of asking the model to decline?**
+Because that is a refused-answer problem, not a comprehension problem. A model
+asked "what is the guidance for next quarter" will usually produce a plausible
+number rather than admit it cannot know one. A regex catches the brief's example
+deterministically, costs nothing, and is auditable. The weakness is paraphrase, so
+the system prompt states the same boundary — described honestly in the writeup as
+a demo guard rather than a classifier.
+
+It also has concrete holes, which is worth admitting: "forward P/E" got through the
+first version because "forward" was only matched inside "going forward". The fix
+scopes it to a metric (`forward P/E`, `forward EPS`, …) rather than matching the
+bare word, so "what forward-looking statements do they disclose in Item 1A" still
+reaches the model. Both cases are now tests.
+
+**Why does the model never compute?**
+Because arithmetic and ranking are where an otherwise correct answer goes quietly
+wrong. `compare_fundamentals` returns a sorted ranking and `diff_filing_section`
+returns added paragraphs, both computed in Python. The model reads and explains.
+The grounding check then confirms every figure in the prose appeared in a tool
+result, with 1% tolerance for rounding.
+
+**Why a diff tool rather than retrieval for "what new risk factors did they add"?**
+Two risk-factor sections are ~115,000 characters each. They cannot both fit in a
+prompt, and similarity search answers "what is said about X", not "what is new".
+Splitting both sections into paragraphs and comparing word sets answers the actual
+question, and returns passages a person can check against the filing. It found 30
+new NVDA paragraphs between FY2025 and FY2026.
+
+**Why five tools rather than one per endpoint?**
+The endpoint list is a UI surface, not a model surface. Models route better with
+few, high-level, well-described tools — and the descriptions are the routing logic.
+Twelve thin tools would make "which one answers a margin comparison" a coin flip.
+
+**Why `gemini-3.5-flash-lite` and not the newest Flash?**
+`gemini-3.8-flash` was capacity-limited during development (503, then hanging
+requests), and the free tier allows 20 requests per day *per model* while one
+question costs two or three calls. `3.5-flash-lite` answered in 0.59s, called tools
+correctly, and had quota available. The model is one environment variable, so the
+choice is a deployment detail rather than an architectural one — but the README has
+to name exactly what ran, so it says this.
+
+**Why does the agent make only two calls per question?**
+Because free tiers are tight. One call picks the tool, one call phrases the answer;
+the loop can do more when it needs to, but the common path is two. That budget is
+also why ranking and diffing are tools rather than something the model derives: it
+keeps the loop short.
+
+**Why poll hourly when fundamentals change quarterly?**
+Because the interval was never the expensive part — the full re-read is, and it
+costs about fifteen seconds. Hourly keeps "a new filing appears within the hour"
+true without a second scheduler, and 120 SEC requests a day is a rounding error
+against a 10-per-second limit. The obvious optimisation is skipping work when the
+newest accession is unchanged; I left it out as another stateful path to get wrong
+at five tickers, and it is the first thing I would add at fifty.
+
+**Why pytest rather than unittest?**
+The tests that matter here are tables: which phrasings must be refused, which
+metric edge cases return null, which valuation inputs degrade. `parametrize` makes
+each case a separate line in the report, so a failure names the input instead of
+"one of these four failed". It is a dev-only dependency — the Docker image builds
+with `uv sync --no-dev`, so it adds nothing to what the reviewer runs.
+
+**Why `analysis/` and `llm/` rather than a flat server directory?**
+Two folders that each answer one question. `analysis/` holds derived values —
+metrics, valuation, the paragraph diff — so "where does a number come from" has one
+answer. `llm/` holds the agent layer, which is the part a reviewer will want to
+read in isolation. The dependency runs one way (`llm/` → `analysis/` → `db.py`), so
+neither folder can quietly reach sideways into the other.
+
+**How does the offline snapshot work?**
+`scripts/snapshot.sh` dumps the running database to `snapshot/tracker.sql.gz`
+(2 MB for the whole universe). The feed checks two env vars at startup: if
+`USE_SNAPSHOT_IF_NO_NETWORK` is on and the `facts` table is empty, it streams that
+dump through `psql --single-transaction` before the first cycle. Live ingestion then
+upserts over it, so the seeded data and the ingested data are the same rows.
+
+The alternative — restoring at Postgres init time — needs no code but no env var
+either, and it re-loads even when a developer wants a clean ingest. Loading in the
+feed keeps the switch explicit and makes the "did it come from the snapshot or from
+EDGAR?" answer visible in the log.
+
 ## Numbers worth quoting
 
 - 125,545 facts, 1,350 concepts, 5 companies.
@@ -217,6 +306,9 @@ EPS is still in the response.
 - Ingest: ~5 s per cycle for all five tickers.
 - Search for "tariff" across all filings: 40 chunks — NVDA 17, MSFT 7, ETN 7,
   AAPL 6, GOOGL 3.
+- Year-over-year diff: 30 new risk-factor paragraphs in NVDA's FY2026 10-K
+  against FY2025.
+- Agent: 5 tools, 5-step budget, deterministic guard, grounding with 1% tolerance.
 
 ## Ambiguities in the brief
 
@@ -230,20 +322,29 @@ EPS is still in the response.
 
 ## If asked what I'd do next, in order
 
-1. Snapshot read/write so the stack runs with no network at review time.
-2. LLM routing layer with explicit refusal for out-of-scope questions.
-3. README and the 1–2 page writeup.
-4. Embeddings, only if the chosen provider exposes `/embeddings`.
+1. Embeddings, only if the chosen provider exposes `/embeddings`.
+2. A second narrative split: `sources/narratives.py` still mixes fetching with
+   chunking.
+3. TTM multiples instead of annual EPS.
 
 ## Honest gaps
 
-- No snapshot yet: a clean `docker compose up` needs network for the first ingest.
-- No LLM layer, so the acceptance questions are answered by endpoints, not by
-  natural language.
+- `/ask` needs an LLM endpoint configured; without one it returns 503 rather than
+  pretending. No key is committed.
+- Google's free tier allows 20 requests per day per model, and a question costs two
+  or three, so the demo is quota-bound. The reviewer's own proxy avoids this, which
+  is why the model is configuration and not code.
+- The scope guard is keyword-based, so a paraphrase without the trigger words
+  reaches the model. The system prompt is the second line of defence.
+- Grounding is a heuristic: it catches invented figures, and accepts unit rephrasing
+  (percent, billions), but it does not verify that a correctly quoted number was
+  used to answer the right question.
 - P/E uses the latest annual EPS, so it can be up to a year stale for companies
   whose fiscal year ended long ago. `period_end` is returned rather than hidden.
 - Share counts can be a quarter behind the price date (`shares_as_of` shows it).
-- The Eaton recovery is the only parser workaround, and it is untested by unit
-  tests — it runs in production and is verified by inspection of the stored text.
+- The Eaton recovery is the only parser workaround, and it has no unit test — it
+  runs in production and is verified by inspection of the stored text.
 - No schema migration path: `init.sql` runs only on an empty volume, so schema
   changes mean `docker compose down -v` and a re-ingest.
+- The snapshot is data plus schema, not a migration mechanism. It is a reset, not
+  a way to upgrade a running database.

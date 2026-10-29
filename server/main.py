@@ -7,15 +7,17 @@ shared across concurrent requests.
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from datetime import date
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import db
-import metrics
+from analysis import metrics, valuation
+from llm import agent, tools
 
 
 @asynccontextmanager
@@ -31,6 +33,11 @@ app = FastAPI(
     description="SEC XBRL fundamentals for the tracked universe.",
     lifespan=lifespan,
 )
+
+# Read once at import; the same values are handed to every request.
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "").strip()
+LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
+LLM_MODEL = os.getenv("LLM_MODEL", "").strip()
 
 
 class EntitySummary(BaseModel):
@@ -162,6 +169,32 @@ class Valuation(BaseModel):
     market_cap: float | None
     trailing_pe: float | None
     trailing_ps: float | None
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=3, max_length=500)
+
+
+class Grounding(BaseModel):
+    ok: bool
+    unverified_numbers: list[str]
+
+
+class Citation(BaseModel):
+    ticker: str
+    section: str | None = None
+    period_end: date | None = None
+    accession: str | None = None
+    chunk_index: int | None = None
+
+
+class AskResponse(BaseModel):
+    question: str
+    answer: str
+    refused: bool
+    tools_used: list[str]
+    citations: list[Citation]
+    grounding: Grounding
 
 
 def _entity_or_404(ticker: str) -> dict[str, Any]:
@@ -366,36 +399,50 @@ def entity_valuation(ticker: str) -> Valuation:
     only meaningful with its as-of dates. No forward estimates are involved.
     """
     entity = _entity_or_404(ticker)
-    price = db.latest_price(entity["cik"])
-    if price is None:
-        raise HTTPException(status_code=404, detail=f"No prices stored for {ticker}")
+    payload = valuation.compute_valuation(entity["cik"])
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"No price or annual fundamentals stored for {ticker}")
 
-    annual = metrics.annual_metrics(db.annual_metric_facts(entity["cik"], metrics.ALL_TAGS), years=1)
-    if not annual:
-        raise HTTPException(status_code=404, detail=f"No annual fundamentals stored for {ticker}")
+    return Valuation(ticker=entity["ticker"] or str(entity["cik"]), cik=entity["cik"], **payload)
 
-    latest = annual[0]
-    shares = metrics.latest_shares(db.share_facts(entity["cik"], metrics.SHARES_TAGS))
-    values = metrics.valuation(
-        price=price["close"],
-        shares=shares[0] if shares else None,
-        eps=latest["eps_diluted"],
-        revenue=latest["revenue"],
-    )
 
-    return Valuation(
-        ticker=entity["ticker"] or str(entity["cik"]),
-        cik=entity["cik"],
-        price_date=price["trade_date"],
-        price=price["close"],
-        fiscal_year=latest["fiscal_year"],
-        period_end=latest["period_end"],
-        eps_diluted=latest["eps_diluted"],
-        revenue=latest["revenue"],
-        net_income=latest["net_income"],
-        shares_outstanding=shares[0] if shares else None,
-        shares_as_of=shares[1] if shares else None,
-        market_cap=values["market_cap"],
-        trailing_pe=values["trailing_pe"],
-        trailing_ps=values["trailing_ps"],
+@app.post("/ask", response_model=AskResponse, tags=["agent"])
+def ask(request: AskRequest) -> AskResponse:
+    """Answer a natural-language question by routing it to tools.
+
+    The model decides which tools answer the question and phrases the reply.
+    Numbers, rankings, and year-over-year paragraph differences are computed in
+    SQL or Python, so the model never does arithmetic. Every figure in the answer
+    is checked against the tool output; `grounding.ok` is false if one is not.
+
+    Forward-looking questions (guidance, forecasts, price targets) are refused
+    before the model is called.
+    """
+    if not LLM_BASE_URL or not LLM_MODEL:
+        raise HTTPException(
+            status_code=503,
+            detail="LLM is not configured: set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL",
+        )
+
+    chat = agent.openai_chat(LLM_BASE_URL, LLM_API_KEY, LLM_MODEL)
+    try:
+        run = agent.run_agent(
+            question=request.question,
+            chat=chat,
+            tool_functions=tools.TOOL_FUNCTIONS,
+            prompt=agent.system_prompt(db.list_entities()),
+        )
+    except agent.ChatError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return AskResponse(
+        question=request.question,
+        answer=run.answer,
+        refused=run.refused,
+        tools_used=run.tools_used,
+        citations=run.citations,
+        grounding=Grounding(
+            ok=not run.unverified_numbers,
+            unverified_numbers=run.unverified_numbers,
+        ),
     )

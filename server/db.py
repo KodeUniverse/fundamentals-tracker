@@ -193,6 +193,22 @@ def get_filing_section(cik: int, section: str, year: int | None = None) -> dict[
         return cur.fetchone()
 
 
+def list_sections(cik: int, section: str, limit: int = 2) -> list[dict[str, Any]]:
+    """Stored versions of one section, newest period first."""
+    with pool.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT accession, filed_date, period_end, section, content
+            FROM filing_sections
+            WHERE cik = %s AND section = %s
+            ORDER BY period_end DESC
+            LIMIT %s
+            """,
+            (cik, section, limit),
+        )
+        return cur.fetchall()
+
+
 def search_chunks(
     query: str,
     cik: int | None = None,

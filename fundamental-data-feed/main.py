@@ -32,11 +32,32 @@ from db import (
     upsert_prices,
     upsert_sections,
 )
-from facts import build_entity, collect_concepts, fact_rows, get_all_facts
-from narratives import chunk_rows, collect_sections
-from prices import collect_prices
+from sources.facts import build_entity, collect_concepts, fact_rows, get_all_facts
+from sources.narratives import chunk_rows, collect_sections
+from sources.prices import collect_prices
+from snapshot import database_is_empty, load as load_snapshot, snapshot_path
 
 log = logging.getLogger("feed")
+
+
+def seed_from_snapshot(conn) -> None:
+    """Load the committed dump if the database is empty and the snapshot is enabled."""
+    path = snapshot_path()
+    if path is None:
+        return
+    if not database_is_empty(conn):
+        log.info("database already has facts; not loading %s", path.name)
+        return
+
+    log.info("loading snapshot %s", path)
+    try:
+        code = load_snapshot(path)
+    except OSError as exc:  # psql missing from the image, or the dump is unreadable
+        log.error("could not load the snapshot: %s", exc)
+        return
+
+    if code != 0:
+        log.error("snapshot load exited with %s; continuing with live ingestion", code)
 
 
 def ingest_ticker(conn, ticker: str) -> None:
@@ -118,6 +139,7 @@ def main() -> int:
 
     conn = connect()
     try:
+        seed_from_snapshot(conn)
         while not stop.is_set():
             for ticker in tickers:
                 if stop.is_set():

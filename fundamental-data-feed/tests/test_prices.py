@@ -1,14 +1,13 @@
-"""Tests for the yfinance frame conversion. No network, no database.
+"""yfinance frame conversion. No network, no database.
 
-Run from the feed directory: .venv/bin/python -m unittest discover -v
+Run from the feed directory: uv run pytest
 """
 
-import unittest
 from datetime import date
 
 import pandas as pd
 
-import prices
+from sources import prices
 
 
 def frame(closes, volumes, adj_closes=None):
@@ -23,24 +22,22 @@ def frame(closes, volumes, adj_closes=None):
     )
 
 
-class PriceRowsTest(unittest.TestCase):
-    def test_converts_bars_and_keeps_the_exchange_date(self):
-        rows = prices.price_rows(frame([100.0, 102.0], [1000, 1200], [99.0, 101.0]), cik=7)
-        self.assertEqual([row["trade_date"] for row in rows], [date(2026, 10, 26), date(2026, 10, 27)])
-        self.assertEqual(rows[1]["close"], 102.0)
-        self.assertEqual(rows[0]["adj_close"], 99.0)
-        self.assertEqual(rows[0]["volume"], 1000)
-        self.assertEqual(rows[0]["cik"], 7)
+def test_converts_bars_and_keeps_the_exchange_date():
+    rows = prices.price_rows(frame([100.0, 102.0], [1000, 1200], [99.0, 101.0]), cik=7)
 
-    def test_skips_a_bar_with_no_close(self):
-        rows = prices.price_rows(frame([100.0, float("nan")], [1000, 0]), cik=7)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["trade_date"], date(2026, 10, 26))
-
-    def test_empty_frame_gives_no_rows(self):
-        rows = prices.price_rows(pd.DataFrame(columns=["Close", "Adj Close", "Volume"]), cik=7)
-        self.assertEqual(rows, [])
+    assert [row["trade_date"] for row in rows] == [date(2026, 10, 26), date(2026, 10, 27)]
+    assert rows[1]["close"] == 102.0
+    assert rows[0]["adj_close"] == 99.0
+    assert rows[0]["volume"] == 1000
+    assert rows[0]["cik"] == 7
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_skips_a_bar_with_no_close():
+    rows = prices.price_rows(frame([100.0, float("nan")], [1000, 0]), cik=7)
+
+    assert len(rows) == 1
+    assert rows[0]["trade_date"] == date(2026, 10, 26)
+
+
+def test_empty_frame_gives_no_rows():
+    assert prices.price_rows(pd.DataFrame(columns=["Close", "Adj Close", "Volume"]), cik=7) == []
