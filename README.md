@@ -6,6 +6,8 @@ reported numbers and the prose in the filings.
 
 ## Quick start
 
+Make sure you create a .env with the variables in **Configuration** first.
+
 ```bash
 cp .env.example .env          # set EDGAR_IDENTITY and the LLM config
 docker compose up -d --build
@@ -14,7 +16,7 @@ The stack comes up on `http://localhost:8000`. Interactive API docs: `/docs`.
 
 ## Configuration
 
-All configuration is environment variables; `.env` is read by compose.
+All configuration is environment variables; `.env` is read by compose. To run with a snapshot make sure SEED_FROM_SNAPSHOT is true (by default it is)
 
 | Variable | Purpose |
 | --- | --- |
@@ -25,6 +27,7 @@ All configuration is environment variables; `.env` is read by compose.
 | `RUN_ONCE` | single pass then exit |
 | `SNAPSHOT_DIR` / `SEED_FROM_SNAPSHOT` | seed an empty database from the committed dump |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | used by `POST /ask` |
+
 
 ### Pointing at your own model
 
