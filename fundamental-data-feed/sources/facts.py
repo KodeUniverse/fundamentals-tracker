@@ -10,37 +10,18 @@ The output shapes mirror database schema.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date
-from typing import NamedTuple, TypedDict
+from typing import NamedTuple
 
 import edgar
 from edgar.entity.models import FinancialFact
+
+from rows import ConceptRow, FactRow
 
 
 class Entity(NamedTuple):
     cik: int
     entity_name: str
     ticker: str | None
-
-
-class ConceptRow(TypedDict):
-    taxonomy: str
-    name: str
-    label: str | None
-
-
-class FactRow(TypedDict):
-    cik: int
-    concept_id: int
-    unit: str
-    value: float
-    start_date: date | None
-    end_date: date
-    form_type: str
-    filed_date: date
-    accession: str
-    filing_fy: int | None
-    filing_fp: str | None
 
 
 def build_entity(company: edgar.Company, ticker: str) -> Entity:

@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import warnings
 from datetime import date, timedelta
-from typing import Any, TypedDict
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
 from pandas.errors import Pandas4Warning
+
+from rows import PriceRow
 
 # yfinance 1.7.0 still calls pandas APIs that pandas 3.1 deprecates. Set this
 # after importing yfinance: pandas registers its own filters at import time and
@@ -26,14 +28,6 @@ warnings.filterwarnings("ignore", category=Pandas4Warning)
 # Long enough to span both recent splits (AAPL 2020, NVDA 2024), which is what
 # makes the adjusted series visibly continuous rather than a cliff.
 HISTORY_PERIOD_YRS = 10
-
-
-class PriceRow(TypedDict):
-    cik: int
-    trade_date: date
-    close: float
-    adj_close: float | None
-    volume: int | None
 
 
 def collect_prices(cik: int, ticker: str) -> list[PriceRow]:

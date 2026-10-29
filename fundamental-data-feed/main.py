@@ -33,7 +33,8 @@ from db import (
     upsert_sections,
 )
 from sources.facts import build_entity, collect_concepts, fact_rows, get_all_facts
-from sources.narratives import chunk_rows, collect_sections
+from chunking import chunk_rows
+from sources.narratives import collect_sections
 from sources.prices import collect_prices
 from snapshot import database_is_empty, load as load_snapshot, snapshot_path
 

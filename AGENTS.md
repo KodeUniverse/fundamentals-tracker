@@ -65,12 +65,14 @@ snapshot/tracker.sql.gz            committed dump, loaded into an empty database
 fundamental-data-feed/
   main.py                          env config, cycle loop, per-ticker transaction
   db.py                            psycopg3 persistence (upsert + bulk insert)
+  rows.py                          row shapes shared by adapters and persistence
+  chunking.py                      section text -> overlapping retrieval windows
   snapshot.py                      seed an empty database from the committed dump
   sources/
-    facts.py                       EDGAR XBRL fetch + normalize -> Entity/ConceptRow/FactRow
-    narratives.py                  10-K Item 1A + Item 7 fetch, cleanup, chunking
-    prices.py                      Yahoo Finance bars -> PriceRow
-  tests/                           pytest suite for chunking, prices, snapshot
+    facts.py                       EDGAR XBRL fetch + normalize
+    narratives.py                  10-K Item 1A + Item 7 fetch and cleanup
+    prices.py                      Yahoo Finance bars
+  tests/                           pytest suite for chunking, narratives, prices, snapshot
 server/
   main.py                          FastAPI routes and response models
   db.py                            connection pool and all SQL
@@ -93,8 +95,9 @@ Notes.md                           decisions, cuts, and known gaps
 
 Module boundary rule: nothing under `sources/` imports `db`, `db.py` never imports
 `edgar`, and no SQL ever lives in `main.py` or in the server's request handlers.
-The server depends one way only: `llm/` → `analysis/` → `db.py`, with `main.py`
-wiring them together.
+Row shapes live in `rows.py`, so the adapters and the persistence layer share
+types without depending on each other. The server depends one way only: `llm/` →
+`analysis/` → `db.py`, with `main.py` wiring them together.
 
 ## API
 

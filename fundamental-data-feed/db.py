@@ -13,9 +13,7 @@ import psycopg
 from psycopg import Connection
 from psycopg.rows import dict_row
 
-from sources.facts import ConceptRow, FactRow
-from sources.narratives import ChunkRow, SectionRow
-from sources.prices import PriceRow
+from rows import ChunkRow, ConceptRow, FactRow, PriceRow, SectionRow
 
 _INSERT_FACTS_SQL = """
 INSERT INTO facts (

@@ -322,9 +322,7 @@ EDGAR?" answer visible in the log.
 ## Next steps, in order
 
 1. Embeddings, only if the chosen provider exposes `/embeddings`.
-2. A second narrative split: `sources/narratives.py` still mixes fetching with
-   chunking.
-3. TTM multiples instead of annual EPS.
+2. TTM multiples instead of annual EPS.
 
 ## Honest gaps
 

@@ -1,8 +1,7 @@
-"""Extract the 10-K narrative sections and split them for retrieval.
+"""Extract the 10-K narrative sections.
 
 Two filings per company: the latest annual report is compared against the prior
-one, so both are stored whole and compared as contiguous text. Chunks are
-derived from the stored text and exist for ranked retrieval, not for storage.
+one, so both are stored whole and compared as contiguous text.
 
 As with `facts.py`, the caller constructs one `Company` per ticker per cycle.
 """
@@ -11,9 +10,11 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any, TypedDict
+from typing import Any
 
 import edgar
+
+from rows import SectionRow
 
 FILINGS_PER_COMPANY = 2
 
@@ -28,35 +29,12 @@ _SECTION_ATTRIBUTES = {
 # the document, not the section body. Eaton's Item 7 is a 252-character pointer.
 _STUB_CHARS = 2000
 
-# 4000 characters is roughly 1000 tokens of English prose. The overlap keeps a
-# sentence that straddles a boundary retrievable from either side.
-CHUNK_CHARS = 4000
-CHUNK_OVERLAP = 400
-
 # EDGAR's HTML-to-text keeps typographic quotes, and ETN's MD&A heading uses a
 # curly apostrophe that a straight-quote pattern would miss.
 _QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
 _SPACE_RUN = re.compile(r"[ \t\u00a0]+")
 _BLANK_RUN = re.compile(r"\n{3,}")
 _MDA_HEADING = re.compile(r"management's discussion and analysis", re.IGNORECASE)
-
-
-class SectionRow(TypedDict):
-    cik: int
-    accession: str
-    form_type: str
-    filed_date: date
-    period_end: date
-    section: str
-    content: str
-    char_count: int
-
-
-class ChunkRow(TypedDict):
-    section_id: int
-    chunk_index: int
-    content: str
-    token_count: int
 
 
 def collect_sections(company: edgar.Company) -> list[SectionRow]:
@@ -89,47 +67,6 @@ def collect_sections(company: edgar.Company) -> list[SectionRow]:
     return rows
 
 
-def chunk_rows(section_id: int, content: str) -> list[ChunkRow]:
-    """DB-ready chunk rows for one stored section."""
-    return [
-        ChunkRow(
-            section_id=section_id,
-            chunk_index=index,
-            content=chunk,
-            token_count=len(chunk) // 4,
-        )
-        for index, chunk in enumerate(split_chunks(content))
-    ]
-
-
-def split_chunks(content: str, size: int = CHUNK_CHARS, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Split a section into overlapping windows that end on word boundaries.
-
-    Each returned chunk is at most `size` characters plus the carry-over tail
-    from the previous chunk, so a boundary never lands mid-word.
-    """
-    chunks: list[str] = []
-    current: list[str] = []
-    length = 0
-
-    for unit in _units(content, size):
-        if current and length + len(unit) > size:
-            chunks.append("\n\n".join(current))
-            # Keep a tail for context, but never at the cost of a chunk that
-            # cannot hold the next unit: a 3995-character paragraph leaves no
-            # room for overlap.
-            room = size - len(unit) - 2
-            carry = _tail(current[-1], min(overlap, room)) if room > 0 else ""
-            current = [carry] if carry else []
-            length = len(carry) + 2
-        current.append(unit)
-        length += len(unit) + 2
-
-    if current:
-        chunks.append("\n\n".join(current))
-    return chunks
-
-
 def _section_text(tenk: Any, section: str) -> str | None:
     text = getattr(tenk, _SECTION_ATTRIBUTES[section])
     if text is None:
@@ -152,33 +89,6 @@ def _mda_from_document(tenk: Any) -> str | None:
     if not headings:
         return None
     return document[headings[-1].start():]
-
-
-def _units(text: str, size: int) -> list[str]:
-    """Paragraphs, with any paragraph longer than `size` split on word breaks."""
-    units: list[str] = []
-
-    for paragraph in text.split("\n\n"):
-        paragraph = paragraph.strip()
-        while len(paragraph) > size:
-            cut = paragraph.rfind(" ", 0, size)
-            if cut <= 0:
-                cut = size
-            units.append(paragraph[:cut].strip())
-            paragraph = paragraph[cut:].strip()
-        if paragraph:
-            units.append(paragraph)
-
-    return units
-
-
-def _tail(text: str, overlap: int) -> str:
-    """Last `overlap` characters of a chunk, moved forward to a word boundary."""
-    if overlap <= 0 or len(text) <= overlap:
-        return text
-    tail = text[-overlap:]
-    space = tail.find(" ")
-    return tail[space + 1:] if space != -1 else tail
 
 
 def _clean(text: str) -> str:

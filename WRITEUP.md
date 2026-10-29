@@ -1,12 +1,14 @@
 # Design writeup
 
-## What it is
+## Architecture 
 
-A Postgres-backed service that ingests three public sources — SEC XBRL facts, SEC
-10-K narrative, and Yahoo Finance prices — and answers questions that span the
-reported numbers and the prose in the filings.
+The service is a Postgres-backed one that ingests three public sources: SEC XBRL facts, SEC
+10-K narratives, and Yahoo Finance prices. It answers questions that span the reported
+numbers and the discussion in the filings. It is useful for an analyst who wants to ask
+questions in natural language and receive an answer that is honest about which numbers
+come from data and which do not.
 
-Two Python services share one database: a long-running poller that refreshes the
+There are two Python services sharing one database: a long-running poller that refreshes the
 sources, and a read-only FastAPI service with a natural-language endpoint on top.
 
 ```
@@ -19,20 +21,23 @@ sources, and a read-only FastAPI service with a natural-language endpoint on top
         └───────┬───────┘ └───┬──────────────┘
                 │             │
       EDGAR XBRL, 10-K,   HTTP clients,
-      Yahoo Finance       optional LLM
+      Yahoo Finance       LLM
 ```
 
-The split is deliberate: ingestion is pull-based and slow-moving, serving is
+It is split this way because ingestion is pull-based and slow-moving, serving is
 read-only and must stay up. The feed never serves, and the server never fetches
 from a public source. The only thing they share is the schema.
 
-Dependencies inside the server run one way — `main.py` → `llm/` → `analysis/` →
-`db.py` — so the agent layer cannot reach into SQL and the analysis layer cannot
-know about HTTP.
+## Runtime choices
+
+**Sync everywhere.** edgartools and psycopg are both blocking, so the feed runs
+single-threaded and the API handlers are plain `def`. FastAPI runs those in a
+thread pool, which is enough for a handful of analysts: 40 reads at 40-way
+concurrency finish in 49 ms.
 
 ## Data model
 
-| Table | Holds | Why it looks like this |
+| Table | Holds | Why this schema |
 | --- | --- | --- |
 | `entities` | CIK, name, ticker | Ticker is display-only and not unique; GOOGL and GOOG share a CIK |
 | `concepts` | taxonomy + tag name | Reference data, unique on `(taxonomy, name)` |
@@ -41,48 +46,39 @@ know about HTTP.
 | `filing_chunks` | retrieval windows | Generated `tsvector`, nullable `vector(1536)` |
 | `prices` | daily bars | Mutable: rewritten each cycle |
 
-Three decisions shaped the rest.
 
-**Facts are stored raw, not as statement line items.** A statement builder picks a
-preferred tag and drops the rest, which loses restatements and makes "which filing
-said this" unanswerable. Keeping the raw layer means the metric rules can change
-without re-ingesting, and every output stays traceable to an accession number.
+Two further decisions shaped the schema:
 
 **Narrative is stored twice: whole and chunked.** Whole sections answer "what new
 risk factors did they add", which is a comparison of two contiguous texts; chunks
-answer "which paragraphs discuss tariffs", which needs ranking and, later, vectors.
-Two risk factors sections are ~115,000 characters each, so the comparison can never
-happen in a prompt.
+answer "which paragraphs discuss tariffs", which needs ranking. Two risk-factor
+sections are ~115,000 characters each, so the comparison can never happen in a prompt.
 
 **Prices are rewritten, facts are appended.** Yahoo back-adjusts its entire history
-when a split happens, so a stored bar is not immutable. `prices` upserts with
-`DO UPDATE`; `facts` uses `DO NOTHING`. The asymmetry is the schema telling the
-truth about the two sources.
+when a stock split happens, so a stored bar is not immutable. `prices` updates/inserts with `DO
+UPDATE`; `facts` uses `DO NOTHING`.
 
-## The three sources
+## Three data sources 
 
 - **XBRL.** One request per company to `data.sec.gov`, ~25,000 facts each, normalized
   into entity, concepts, and facts inside a single transaction per ticker.
 - **10-K narrative.** The two most recent unamended 10-Ks per company; Item 1A and
   Item 7 extracted, whitespace collapsed, then chunked into ~4,000-character
-  windows with 15% overlap.
+  windows with 10% overlap.
 - **Prices.** Ten years of daily bars per ticker in one call, ~12,500 rows total,
-  refetched and rescaled every cycle.
+  refetched and rescaled every cycle. Yahoo through yfinance because it needs no
+  API key and returns adjusted closes. Alpaca or Alpha Vantage would put a
+  credential between a fresh clone and a working stack, for the same daily data.
 
 A cycle takes about fifteen seconds for all five companies and makes a few dozen
 requests, well inside SEC's fair-access limits. Re-running is idempotent: a second
 cycle reports `0 new rows`.
 
-**The feed polls every hour, which is far more often than any source changes.**
-Fundamentals move quarterly, 10-Ks annually, prices once a day. Most cycles
-therefore do work that cannot produce new data: both 10-K documents are re-parsed,
-and ~126,000 fact rows are re-sent only to conflict with what is already stored.
-That redundancy is deliberate. A "skip if the newest accession is unchanged" check
-would remove most of it, but it is another piece of state to get wrong, and the
-whole cycle costs seconds. Hourly polling keeps the latency story simple — a new
-filing appears within the hour — without a second scheduler or per-source
-intervals. At this scale the wasted work is a rounding error; at fifty companies it
-would be the first thing to fix.
+**The feed polls every hour, far more often than any source changes.** It means a
+new filing appears within the hour, but most cycles re-parse both 10-Ks and re-send
+~126,000 fact rows to find nothing new. A "newest accession unchanged" check would
+remove that; I left it out because the whole cycle costs seconds.
+
 
 ## The cross-source join
 
@@ -94,15 +90,17 @@ trailing_pe = latest close ÷ latest annual diluted EPS
 trailing_ps = market_cap ÷ annual revenue
 ```
 
-The share count is the interesting part. `dei:EntityCommonStockSharesOutstanding`
-is the freshest tag, but Alphabet reports shares per class with a dimension, and
-the pipeline stores consolidated facts only — so the cover-page tag is absent
-for GOOGL entirely. The fallback chain (`dei` → `us-gaap:CommonStockShares-
-Outstanding` → weighted diluted) is what keeps P/S working for all five
-companies. P/E needs no shares, so the two multiples degrade independently.
+The share count needs two tags to stay fresh:
 
-Every valuation response returns its inputs and their dates — `price_date`,
-`period_end`, `shares_as_of` — rather than a bare ratio.
+`dei:EntityCommonStockSharesOutstanding` comes from the cover page and refreshes
+quarterly, but Alphabet reports shares per class with a dimension, and the pipeline
+stores consolidated facts only, so GOOGL has no cover-page count at all.
+`us-gaap:CommonStockSharesOutstanding` covers every company, but NVDA tags it only
+annually, so its newest value is a year old while the price is current. I take the
+freshest period available.
+
+Every valuation response returns its inputs and their dates (`price_date`,
+`period_end`, `shares_as_of`) rather than a bare ratio.
 
 ## Where the LLM is, and isn't
 
@@ -119,55 +117,23 @@ ranking, valuation, filing search, and a year-over-year section diff.
 
 The model never computes, so the only numbers it can report are ones a tool
 produced. The response carries `tools_used`, `citations` (ticker, section, period,
-accession), and a `grounding` block. The tool descriptions are the routing logic —
-five well-described tools, not twelve thin endpoint wrappers.
-
-## Messy data handled
-
-- Revenue tags drift by era and issuer; resolved with a priority-ordered list per
-  period.
-- GOOGL and ETN never tag `GrossProfit`; derived as revenue minus `CostOfRevenue`,
-  with the reported value preferred where present.
-- ETN stopped tagging `OperatingIncomeLoss` after 2019; its operating margin is
-  null rather than estimated.
-- Eaton's Item 7 is a 252-character cross-reference and the real MD&A sits later
-  under a heading with a typographic apostrophe; recovered to 74,916 characters.
-- Fiscal years end in different months (September, June, January, December), so
-  "last year" is approximate across companies — which is why `period_end` is
-  always returned.
+accession), and a `grounding` block. 
+`grounding.ok` is advisory. It flags figures it cannot trace back to a tool result.
 
 ## Tradeoffs and what was left out
 
+- **Keyword list guard instead of classifier for rejection.** Given more time I would expand the prompt rejection handling to use a classifier model instead of regex.
+- **Sync handlers, not async.** An async refactor (async driver, async HTTP
+  client, async tools) would raise throughput under concurrency, but not make any
+  single answer faster. With a handful of users and their requests, the 40-thread pool is
+  far above the load.
+- **Annual EPS, not a TTM rollup.** P/E uses the latest reported annual EPS, so it
+  can be up to a year old; `period_end` is returned beside it so the age is visible.
 - **No vector embeddings.** Full-text search answers these questions, needs no API
   key, and works when the endpoint in front of the model exposes no `/embeddings`
   route. The column and index exist; nothing depends on them.
-- **Annual EPS, not a TTM rollup.** The straightforward definition is annual EPS. A TTM
-  figure needs four quarters, consistent fiscal periods, and split-aware
-  summation, and would still be an approximation. The as-of date is returned so
-  staleness is visible.
-- **No MCP server.** It is a distribution mechanism for the same five tools, not an
-  architecture, and it would add a process to a stack meant to start with one
-  command.
-- **No 10-K/A handling, no quarterly metrics, no free cash flow.** Each is a real
-  feature and each is out of scope for a prototype.
-- **`sources/narratives.py` mixes fetching with chunking.** The split belongs in its
-  own change; chunking is pure text processing and deserves its own module.
-- **`db.py` imports the row types from `sources/`.** Moving those `TypedDict`s into
-  a shared module would make persistence independent of the adapters.
-
-## Testing
-
-101 tests: 56 in the server (metric math, valuation, paragraph diffing, scope
-guard, grounding, tool loop) and 45 in the feed (chunking, price conversion,
-snapshot discovery). None need a database or a network — the tool loop is
-exercised with a fake chat function, so agent behaviour is testable without an
-API key.
-
-## Snapshot and offline review
-
-`snapshot/tracker.sql.gz` is a 2 MB dump of the whole universe: 125,886 facts, 20
-filing sections, 361 chunks, 12,560 price bars. On an empty database the feed
-loads it before the first cycle, then ingests over the top; because ingestion is
-idempotent, the second pass reports `0 new rows`. Restoring takes a few seconds and
-needs no network, which is what makes the stack reviewable offline.
-
+- **No MCP server.** The service runs its own agent loop and is the only consumer
+  of the five tools, so an MCP server would add a second transport with no MCP client
+  to serve. The tool schemas are transport-neutral, so wrapping them for MCP
+  clients is an additive change later.
+- **Additional data sources: no quarterly metrics, 8-K, insider transactions.** I would add these given more time.
