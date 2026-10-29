@@ -319,7 +319,7 @@ cd fundamental-data-feed && uv run pytest
 | `POLL_INTERVAL_SECONDS` | feed cycle interval (default 3600) |
 | `RUN_ONCE` | single pass then exit |
 | `LOG_LEVEL` | default INFO |
-| `SNAPSHOT_DIR` / `USE_SNAPSHOT_IF_NO_NETWORK` | when enabled and `facts` is empty, the feed loads `<SNAPSHOT_DIR>/tracker.sql.gz` before its first cycle; live ingestion then upserts over it |
+| `SNAPSHOT_DIR` / `SEED_FROM_SNAPSHOT` | when enabled and `facts` is empty, the feed loads `<SNAPSHOT_DIR>/tracker.sql.gz` before its first cycle; live ingestion then upserts over it |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | used by `POST /ask`; any OpenAI-compatible `/chat/completions` endpoint. Without base URL and model, `/ask` returns 503 |
 
 Read env at the entrypoint and pass values down; don't sprinkle `os.getenv`

@@ -276,7 +276,7 @@ neither folder can quietly reach sideways into the other.
 **How does the offline snapshot work?**
 `scripts/snapshot.sh` dumps the running database to `snapshot/tracker.sql.gz`
 (2 MB for the whole universe). The feed checks two env vars at startup: if
-`USE_SNAPSHOT_IF_NO_NETWORK` is on and the `facts` table is empty, it streams that
+`SEED_FROM_SNAPSHOT` is on and the `facts` table is empty, it streams that
 dump through `psql --single-transaction` before the first cycle. Live ingestion then
 upserts over it, so the seeded data and the ingested data are the same rows.
 

@@ -37,7 +37,7 @@ All configuration is environment variables; `.env` is read by compose.
 | `TICKERS` | tracked universe, comma separated |
 | `POLL_INTERVAL_SECONDS` | feed cycle interval (default 3600) |
 | `RUN_ONCE` | single pass then exit |
-| `SNAPSHOT_DIR` / `USE_SNAPSHOT_IF_NO_NETWORK` | seed an empty database from the committed dump |
+| `SNAPSHOT_DIR` / `SEED_FROM_SNAPSHOT` | seed an empty database from the committed dump |
 | `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | used by `POST /ask` |
 
 `TICKERS` defaults to the five tracked companies (`NVDA,MSFT,AAPL,GOOGL,ETN`), but
@@ -232,7 +232,7 @@ scripts/restore_snapshot.sh    # load it back (replaces the database)
 ```
 
 The feed loads it automatically when the database is empty and
-`USE_SNAPSHOT_IF_NO_NETWORK=true`.
+`SEED_FROM_SNAPSHOT=true`.
 
 ## Layout
 

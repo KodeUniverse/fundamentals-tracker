@@ -1,8 +1,8 @@
 """Seed an empty database from the committed dump.
 
-Seeds the db from the dumped snapshot, then carries on with live ingestion, which
-upserts over the top. Loading only happens when the database is empty, so it can
-never overwrite newer data.
+`SEED_FROM_SNAPSHOT` turns this on. On startup the feed loads the dump when the
+`facts` table has no rows, then continues with live ingestion, which upserts over
+the top. A populated database is never overwritten.
 """
 
 from __future__ import annotations
@@ -19,8 +19,12 @@ SNAPSHOT_FILE = "tracker.sql.gz"
 
 
 def snapshot_path() -> Path | None:
-    """The configured snapshot, or None when the feature is off or the file is absent."""
-    enabled = os.getenv("USE_SNAPSHOT_IF_NO_NETWORK", "").lower() in {"1", "true", "yes"}
+    """The dump to seed from, or None when seeding is off or the file is absent.
+
+    Whether it is actually loaded is the caller's decision: only an empty database
+    is seeded, so a populated one is never overwritten.
+    """
+    enabled = os.getenv("SEED_FROM_SNAPSHOT", "").lower() in {"1", "true", "yes"}
     if not enabled:
         return None
 

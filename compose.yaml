@@ -53,9 +53,9 @@ services:
       # Ingestion behavior
       TICKERS: ${TICKERS:-NVDA,MSFT,AAPL,GOOGL,ETN}
       POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-3600}
-      # Allow loading from local snapshot when live network is unavailable
+      # Seed an empty database from the committed dump before the first cycle.
       SNAPSHOT_DIR: /app/snapshots
-      USE_SNAPSHOT_IF_NO_NETWORK: ${USE_SNAPSHOT_IF_NO_NETWORK:-true}
+      SEED_FROM_SNAPSHOT: ${SEED_FROM_SNAPSHOT:-true}
     volumes:
       # Committed dump the feed seeds an empty database from; see scripts/snapshot.sh.
       - ./snapshot:/app/snapshots:ro
