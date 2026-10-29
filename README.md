@@ -60,19 +60,6 @@ Without a base URL and model, `/ask` returns 503 rather than guessing.
 `gemini-3.5-flash-lite`, via the OpenAI-compatible endpoint
 `https://generativelanguage.googleapis.com/v1beta/openai`.
 
-Note on the free tier: Google's limit is **20 requests per day per model**, and one
-question costs two or three model calls (tool turn, then answer). That is enough
-for a handful of demo questions, not for extended testing. If you point the service
-at your own proxy this does not apply.
-
-Check an endpoint without the agent:
-
-```bash
-./test_llm.sh "say ok"                       # prompt
-./test_llm.sh --tools "What is AAPL's P/E?"  # expect a tool call
-./test_llm.sh --model another-model "say ok" # try a model without editing .env
-```
-
 ## Example interactions
 
 ### API calls
